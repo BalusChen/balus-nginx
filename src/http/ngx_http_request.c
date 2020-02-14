@@ -594,6 +594,7 @@ ngx_http_alloc_request(ngx_connection_t *c)
         return NULL;
     }
 
+    // NOTE: 变量相关
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
     r->variables = ngx_pcalloc(r->pool, cmcf->variables.nelts

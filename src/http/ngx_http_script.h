@@ -69,6 +69,7 @@ typedef struct {
     void                       *lengths;
     void                       *values;
 
+    // QUESTION: 为什么内嵌 union，而不是直接放在 struct 里面？
     union {
         size_t                  size;
     } u;

@@ -22,6 +22,11 @@ struct ngx_http_upstream_rr_peer_s {
     ngx_str_t                       name;
     ngx_str_t                       server;
 
+    /*
+     * balus: current_weight 为权重排序的值
+     *        weight 为配置的值，用来恢复初始状态
+     *
+     */
     ngx_int_t                       current_weight;
     ngx_int_t                       effective_weight;
     ngx_int_t                       weight;

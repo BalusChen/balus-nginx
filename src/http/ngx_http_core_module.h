@@ -158,7 +158,10 @@ typedef struct {
 
     ngx_hash_t                 variables_hash;
 
+    // NOTE: variables 是一个数组，是用来存储**索引**过了的变量名
     ngx_array_t                variables;         /* ngx_http_variable_t */
+    // QUESTION: 比《深入》多了一个 prefix_variables，干啥用？
+    // GUESS: 应该是为了存储 arg_*  这些特殊变量
     ngx_array_t                prefix_variables;  /* ngx_http_variable_t */
     ngx_uint_t                 ncaptures;
 
@@ -168,6 +171,7 @@ typedef struct {
     ngx_uint_t                 variables_hash_max_size;
     ngx_uint_t                 variables_hash_bucket_size;
 
+    // NOTE: 这个是用于构造 variable_hash 散列表的初始结构体
     ngx_hash_keys_arrays_t    *variables_keys;
 
     ngx_array_t               *ports;

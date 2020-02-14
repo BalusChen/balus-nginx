@@ -789,6 +789,7 @@ found:
     u->ssl_name = uscf->host;
 #endif
 
+    // balus: peer.init 是 ngx_http_round_robin.c 中的  ngx_http_upstream_init_round_robin_peer
     if (uscf->peer.init(r, uscf) != NGX_OK) {
         ngx_http_upstream_finalize_request(r, u,
                                            NGX_HTTP_INTERNAL_SERVER_ERROR);

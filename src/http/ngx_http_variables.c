@@ -380,6 +380,7 @@ static ngx_http_variable_t  ngx_http_core_variables[] = {
     { ngx_string("sent_http_"), NULL, ngx_http_variable_unknown_header_out,
       0, NGX_HTTP_VAR_PREFIX, 0 },
 
+      // QUESTION: 这个 sent_trailer 是啥？《深入》里面说的是 upstream_http_，是这个么？
     { ngx_string("sent_trailer_"), NULL, ngx_http_variable_unknown_trailer_out,
       0, NGX_HTTP_VAR_PREFIX, 0 },
 
@@ -402,6 +403,10 @@ ngx_http_variable_value_t  ngx_http_variable_true_value =
 static ngx_uint_t  ngx_http_variable_depth = 100;
 
 
+/*
+ * NOTE: 带 s 后缀的版本只是做了一些内存分配、初始化工作，实际的添加工作是在这里做的
+ */
+
 ngx_http_variable_t *
 ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
 {
@@ -417,12 +422,16 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         return NULL;
     }
 
+    // GUESS: 是不是 flags 里面带 PREFIX 就说明是 arg_ 这样的特殊变量？
+    //        但是看了函数感觉没有啥特征表示这是在处理 arg_ 这种特殊变量
     if (flags & NGX_HTTP_VAR_PREFIX) {
         return ngx_http_add_prefix_variable(cf, name, flags);
     }
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
+    // QUESTION: 从这里看 cmcf->variable_keys 的 key 也是早已设置了，那么是啥时候呢？
+    // NOTE: 看下面，这里找到的了话是 update 操作，下面 for 循环后面才是初始的 write 操作
     key = cmcf->variables_keys->keys.elts;
     for (i = 0; i < cmcf->variables_keys->keys.nelts; i++) {
         if (name->len != key[i].key.len
@@ -434,11 +443,13 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         v = key[i].value;
 
         if (!(v->flags & NGX_HTTP_VAR_CHANGEABLE)) {
+            // ATTENTION: 注意这个 error message，后面可能就可以看到
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                "the duplicate \"%V\" variable", name);
             return NULL;
         }
 
+        // QUESTION: 啥意思这是？？？
         if (!(flags & NGX_HTTP_VAR_WEAK)) {
             v->flags &= ~NGX_HTTP_VAR_WEAK;
         }
@@ -446,6 +457,7 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         return v;
     }
 
+    // NOTE: 走到这里说明没有找到(那意思就是说上面的找到了之后进行的操作是 update 了？)
     v = ngx_palloc(cf->pool, sizeof(ngx_http_variable_t));
     if (v == NULL) {
         return NULL;
@@ -457,6 +469,7 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         return NULL;
     }
 
+    // NOTE: 都转为小写字符？方便后面使用？
     ngx_strlow(v->name.data, name->data, name->len);
 
     v->set_handler = NULL;
@@ -471,6 +484,7 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         return NULL;
     }
 
+    // NOTE: 返回 NGX_BUSY 说明哈希表里面已经有一个一样的 key 了
     if (rc == NGX_BUSY) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "conflicting variable name \"%V\"", name);
@@ -480,6 +494,10 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
     return v;
 }
 
+
+/*
+ * NOTE: 这个是处理 flag 中带有 NGX_HTTP_VAR_PREFIX 的
+ */
 
 static ngx_http_variable_t *
 ngx_http_add_prefix_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
@@ -506,6 +524,7 @@ ngx_http_add_prefix_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
             return NULL;
         }
 
+        // QUESTION: 所以 WEAK 这个 flag 是啥意思？
         if (!(flags & NGX_HTTP_VAR_WEAK)) {
             v->flags &= ~NGX_HTTP_VAR_WEAK;
         }
@@ -535,6 +554,47 @@ ngx_http_add_prefix_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
     return v;
 }
 
+
+/*
+ * QUESTION: 这个函数是用来干啥的？得到的是哪里的下标？是变量名还是变量值的？
+ *           是 cmcf 中的还是 request 中的？或者说 cmcf 和 request 中这俩数组都存有
+ *           所有的内部变量值，只是内容不一样？
+ *
+ * NOTE: 是我的理解和总结
+ *       1. 一开始是在 ngx_http_core_module 中的 preconfiguration 回调中调用 ngx_http_variables_add_core_vars
+ *       把所有预设在 ngx_http_core_variables 数组中所有变量的名都加入到 cmcf->variables_keys
+ *       此时 cmcf->variable_keys 是准备好了的(其实也只是存了变量名)
+ *       2. TODO
+ *
+ * NOTE: 这个函数就是用来将变量名索引化的
+ *       一开始变量都在 cmcf->variable_keys 里面，包含了变量名的所有信息(name/get_handler/set_handler...)
+ *       但是这个是用来构造 cmcf->variable_hash 的
+ *       索引就和 cmcf->variables 这个数组相关了，是否将一个变量索引话是模块自己的事情，
+ *       索引化有助于提高访问速度，但是内存占用会变大，所以我们不能假定变量都索引话了，这
+ *       种情况下我们又希望变量的访问速度可以快些(但是其实达不到索引那么快)，所以我们才需
+ *       要 cmcf->variable_hash，所有变量(除特殊变量)都在里面
+ *       hash 是 nginx 提供给我们快速速访问的一种方式，而 index 是由我们决定要不要的。
+ *       如果我们需要索引的话，就调用 ngx_http_get_variable_index 方法，这样就会把目标
+ *       变量名同时放到 cmcf->variables 这个数组里面去，这样就可以使用下标来进行索引了，
+ *       而不需要用变量名来进行 hash 然后再在哈希表里面查并逐字符比较
+ *
+ * NOTE: 那么缓存和索引化是什么关系呢？
+ *       上面说的索引化，都是针对变量名的，虽然 get_handler 是和变量名在一起的，但是其实
+ *       这个时候我们还没有把变量的值给解析出来，每次想要拿变量值的时候就要调用 get_handler，
+ *       这样太耗时了，所以缓存就是第一次调用 get_handler 就把值给存到 r->variables 数组
+ *       的对应位置去。r->variables 和 cmcf->variables 数组是一一对应的，在创建 request
+ *       时，即 ngx_http_alloc_request 函数中，可以看到：
+ *
+ *       r->variables = ngx_pcalloc(r->pool, cmcf->variables.nelts
+ *                                           * sizeof(ngx_http_variable_value_t));
+ *
+ * NOTE: 也就是说会分配一个和 cmcf->variables 一样大的数组，某个变量值需要缓存的时候就把
+ *       通过 get_handler 得到的值给放到 r->variables 的对应位置，后面就可以直接从里面
+ *       取了，而不需要再次调用 get_handler
+ *       而且因为 r->variables 也是一个数组，而且是值的数组，所以我们没法通过变量名来查询，
+ *       而只能通过索引来访问，所以说之后索引了的变量(即在 cmcf->variables 中的)才能被
+ *       缓存。
+ */
 
 ngx_int_t
 ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
@@ -573,6 +633,14 @@ ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
         }
     }
 
+    /* NOTE: 在 cmcf->variables 中没有找到就走到这里 */
+
+    /*
+     * QUESTION: 所以调用此函数的作用就是把变量名写入到 cmcf->variables 数组里面去？
+     *           但是 nginx 不是多进程的么？多个进程写怎么办呢？还是说 spawn 出多进程的
+     *           操作是在后面做的(框架初始化的操作给忘了)
+     *           这个函数应该是用到了某个变量的模块才会调用。
+     */
     v = ngx_array_push(&cmcf->variables);
     if (v == NULL) {
         return NGX_ERROR;
@@ -596,6 +664,11 @@ ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
 }
 
 
+/*
+ * NOTE: 这个函数一般是在 ngx_http_get_variable_index 函数之后调用
+ *
+ * TODO: 这个函数没有看懂
+ */
 ngx_http_variable_value_t *
 ngx_http_get_indexed_variable(ngx_http_request_t *r, ngx_uint_t index)
 {
@@ -610,12 +683,14 @@ ngx_http_get_indexed_variable(ngx_http_request_t *r, ngx_uint_t index)
         return NULL;
     }
 
+    // QUESTION: 为什么 not_found 也直接返回？
     if (r->variables[index].not_found || r->variables[index].valid) {
         return &r->variables[index];
     }
 
     v = cmcf->variables.elts;
 
+    // QUESTION: depth 是个啥概念？递归用的？
     if (ngx_http_variable_depth == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "cycle while evaluating variable \"%V\"",
@@ -623,6 +698,7 @@ ngx_http_get_indexed_variable(ngx_http_request_t *r, ngx_uint_t index)
         return NULL;
     }
 
+    /* QUESTION: 这里和下面的两个 ++ 操作起的什么作用？ */
     ngx_http_variable_depth--;
 
     if (v[index].get_handler(r, &r->variables[index], v[index].data)
@@ -962,6 +1038,8 @@ ngx_http_variable_unknown_header(ngx_http_variable_value_t *v, ngx_str_t *var,
             i = 0;
         }
 
+        // QUESTION: hash == 0 是什么情况会出现的呢？我写 flv 添加 X-flv-debug-times,
+        //           X-flv-debug-filepositions 时把 hash 值设置为 0 好像不会被发送？
         if (header[i].hash == 0) {
             continue;
         }
@@ -969,6 +1047,7 @@ ngx_http_variable_unknown_header(ngx_http_variable_value_t *v, ngx_str_t *var,
         for (n = 0; n + prefix < var->len && n < header[i].key.len; n++) {
             ch = header[i].key.data[n];
 
+            // NOTE: 统一为小写字母、以及短横线统一为下划线来进行比较
             if (ch >= 'A' && ch <= 'Z') {
                 ch |= 0x20;
 
@@ -981,6 +1060,7 @@ ngx_http_variable_unknown_header(ngx_http_variable_value_t *v, ngx_str_t *var,
             }
         }
 
+        // NOTE: 通过两个条件检查是否找到了
         if (n + prefix == var->len && n == header[i].key.len) {
             v->len = header[i].value.len;
             v->valid = 1;
@@ -2588,6 +2668,10 @@ ngx_http_regex_exec(ngx_http_request_t *r, ngx_http_regex_t *re, ngx_str_t *s)
 #endif
 
 
+/*
+ * NOTE:
+ */
+
 ngx_int_t
 ngx_http_variables_add_core_vars(ngx_conf_t *cf)
 {
@@ -2602,6 +2686,8 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
+    // QUESTION: pool 和 temp_pool 有啥区别来着？
+    // NOTE: cmcf->variables_keys 是 ngx_hash_key_arrays_t 结构，用于构造 cmcf->variables_hash
     cmcf->variables_keys->pool = cf->pool;
     cmcf->variables_keys->temp_pool = cf->pool;
 
@@ -2624,6 +2710,9 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
             return NGX_ERROR;
         }
 
+        // NOTE: ngx_http_add_variable 函数只是
+        //       下面这条语句把 ngx_http_core_variables 数组中的元素整个放到
+        //       cmcf->variable_keys 中去了(包括 get_handler/set_handler 等)
         *v = *cv;
     }
 
@@ -2631,6 +2720,17 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
 }
 
 
+/*
+ * QUESTION: 我的疑问
+ *           最开始内部变量是怎么被添加进来的？cmcf->variable_keys 结构体是在哪里构建的？
+ *           cmcf->variable 这个数组为什么就已经把变量名给存进去？
+ *           (update: 看下面内层 for 循环中的 ngx_strncmp)
+ *
+ * NOTE: 这个函数是在调用完所有模块的 postconfiguration 之后调用的，目的有几个：
+ *       1. 检查被索引了的变量的合法性。因为
+ *       2. 处理 arg_, cookie_, http_, send_http_, upstream_http_ 这 5 类特殊变量
+ *       3.
+ */
 ngx_int_t
 ngx_http_variables_init_vars(ngx_conf_t *cf)
 {
@@ -2648,6 +2748,16 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
     v = cmcf->variables.elts;
     pv = cmcf->prefix_variables.elts;
     key = cmcf->variables_keys->keys.elts;
+    /*
+     * NOTE: 下面这个 for 循环是把把每个内部变量的 index 给设置好
+     *       cmcf->variable_keys 是 ngx_hash_keys_arrays_t 结构
+     *
+     * QUESTION: 1. cmcf->variables 这个数组中的元素为 ngx_http_variable_t
+     *           看来是此时只存了 name，没有存 get_handler/index/flags 这些字段
+     *           那么 name 字段是什么时候写入的呢？
+     *           2. cmcf->variable_keys 里面的这些 name/get_handler/flag 这些字段是
+     *           什么时候设置的？
+     */
 
     for (i = 0; i < cmcf->variables.nelts; i++) {
 
@@ -2662,11 +2772,14 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
                 v[i].get_handler = av->get_handler;
                 v[i].data = av->data;
 
+                // QUESTION: 为什么添加这个索引标志？
+                //           什么才叫做"被索引了"？
                 av->flags |= NGX_HTTP_VAR_INDEXED;
                 v[i].flags = av->flags;
 
                 av->index = i;
 
+                // QUESTION: NGX_HTTP_VAR_WEAK 标志位表示什么？
                 if (av->get_handler == NULL
                     || (av->flags & NGX_HTTP_VAR_WEAK))
                 {
@@ -2677,9 +2790,12 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
             }
         }
 
+        /* NOTE: 走到这里说明 get_handler == NULL 或者带有 NGX_HTTP_VAR_WEAK 标志位 */
+
         len = 0;
         av = NULL;
 
+        // NOTE: 首先在 prefix_variables 数组中找
         for (n = 0; n < cmcf->prefix_variables.nelts; n++) {
             if (v[i].name.len >= pv[n].name.len && v[i].name.len > len
                 && ngx_strncmp(v[i].name.data, pv[n].name.data, pv[n].name.len)
@@ -2698,6 +2814,7 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
             goto next;
         }
 
+        // NOTE: 在 prefix_variables 数组中还是没有找到，就出错
         if (v[i].get_handler == NULL) {
             ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
                           "unknown \"%V\" variable", &v[i].name);
@@ -2705,6 +2822,8 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
             return NGX_ERROR;
         }
 
+        // NOTE: 走到这里说明正常找到了对应的 get_handler/name/flags
+        // QUESTION: 为什么要用 continue，不可以啥都不写么？
     next:
         continue;
     }

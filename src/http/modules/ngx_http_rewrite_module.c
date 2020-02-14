@@ -147,6 +147,7 @@ ngx_http_rewrite_handler(ngx_http_request_t *r)
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
     index = cmcf->phase_engine.location_rewrite_index;
 
+    // QUESTION: 这是啥意思？
     if (r->phase_handler == index && r->loc_conf == cscf->ctx->loc_conf) {
         /* skipping location rewrite phase for server null location */
         return NGX_DECLINED;
@@ -195,6 +196,7 @@ ngx_http_rewrite_var(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     rlcf = ngx_http_get_module_loc_conf(r, ngx_http_rewrite_module);
 
     if (rlcf->uninitialized_variable_warn == 0) {
+        // NOTE: 对于在 set 执行之前就用到了该外部变量，返回一个空字符串
         *v = ngx_http_variable_null_value;
         return NGX_OK;
     }
@@ -257,6 +259,7 @@ ngx_http_rewrite_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         return NGX_CONF_OK;
     }
 
+    // NOTE: 为了在 ngx_http_rewrite_handler 可以判断到了末尾(NULL);
     code = ngx_array_push_n(conf->codes, sizeof(uintptr_t));
     if (code == NULL) {
         return NGX_CONF_ERROR;
@@ -543,6 +546,7 @@ ngx_http_rewrite_if(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    // QUESTION: 这是干啥？
     pctx = cf->ctx;
     ctx->main_conf = pctx->main_conf;
     ctx->srv_conf = pctx->srv_conf;
@@ -906,29 +910,91 @@ ngx_http_rewrite_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    // NOTE: 跳过 $ 符号
     value[1].len--;
     value[1].data++;
 
+    // QUESTION:
     v = ngx_http_add_variable(cf, &value[1],
                               NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_WEAK);
     if (v == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    // NOTE: 变量名索引化
     index = ngx_http_get_variable_index(cf, &value[1]);
     if (index == NGX_ERROR) {
         return NGX_CONF_ERROR;
     }
 
+    /*
+     * NOTE: 这里需要注意：
+     *       按照常理，对于外部变量，每一次 set 都会给他赋值，并且读取变量值的时候因为变量
+     *       值是被缓存的，所以可以直接从 ngx_http_request_t 结构的 variables 数组中取的，
+     *       看起来 get_handler 是不需要的，但是其实有的模块会在 set 脚本执行之前就使用到了
+     *       外部变量了：
+     *
+     *       location /foo {
+     *          echo "a = $a";      # echo 来自 OpenResty
+     *       }
+     *
+     *       location /bar {
+     *          set $a "hello";
+     *          echo "a = $a";
+     *       }
+     *
+     *       上面两个 location 都用到了变量 $a，但是只有在 /bar 中使用了 set，那么变量
+     *       $a 在整个配置中都是可见的，所以在 /foo 中可以使用，但是由于每个请求都有独立的
+     *       副本，所以我 curl http://localhost/foo 时就在 set 之前用到了 $a 变量，此时
+     *       就需要这个 get_handler 来得到一个正确的默认值(即空串)
+     */
     if (v->get_handler == NULL) {
+        // NOTE: ngx_http_rewrite_var 实际上是返回一个值为空串的值
+        //       目的是防止这个变量还没有被赋值就使用了，这个时候返回一个空串
         v->get_handler = ngx_http_rewrite_var;
         v->data = index;
     }
 
+    /* NOTE: 下面开始把 var-value 给 code 化 */
+
+    // NOTE: 1. 首先把 value 给 code 化
     if (ngx_http_rewrite_value(cf, lcf, &value[2]) != NGX_CONF_OK) {
         return NGX_CONF_ERROR;
     }
 
+    // NOTE: 2. 然后把 var 给 code 化
+    /* QUESTION: 为什么这里还要检查 v->set_handler，在 ngx_http_get_variable_index
+     *           已经把 set_handler 给设置为 NULL 了啊？
+     *
+     * NOTE: 这是因为有可能变量不是第一次 set，所以 ngx_http_get_variable_index 只是
+     *       update 了，而不会将 set_handler/get_handler 设置为 NULL
+     *
+     * QUESTION: 那现在又有一个新的问题。为什么设置了 set_handler 就使用
+     *           ngx_http_script_var_handler_code_t，而没有设置 set_handler 就
+     *           使用 ngx_http_script_var_code_t 呢？二者有什么区别呢？
+     *
+     * NOTE: 这是为了处理内外变量混用的情况。
+     *       1. 大部分情况下，内部变量不会与外部变量混用。此时，我们把 ngx_http_script_var_code_t
+     *       指令结构体添加到 codes 数组中取，再把变量的索引传到其 index 成员，并设置变
+     *       量指定的执行方法为 ngx_http_script_var_code
+     *       这是 if 后面的代码所做的事情
+     *       2. 如果一个内部变量希望在 nginx.conf 配置文件中用 set 修改其值，那么它就会
+     *       实现 set_handler 方法。意思
+     *
+     * QUESTION: 为什么要对 set $built_in xxx; 这种对内部变量赋值的情况特殊对待？
+     *
+     * NOTE: 1. 外部变量，其值是被缓存在 ngx_http_request_t::variables 数组中的，我们取
+     *       值的时候只能通过下标从这个数组中拿；更新值的时候，也必须通过下标来更新这个数
+     *       组中对应的元素，这个就是 ngx_http_script_var_code 做的事情，外部变量的设置
+     *       方法是通用的，所以可以使用这一个函数来完成所有外部变量的设置工作。
+     *       2. 但是内部变量不一样，并不是所有的内部变量都被缓存在请求的 variables 数组
+     *       中，比如说 limit_rate 这个内部变量，其值直接存储在 ngx_http_request_t::limit_rate 中，
+     *       所以 ngx_http_script_var_code 并不能处理这些情况，所以新创建了
+     *       ngx_http_script_var_handler_code_t 这个结构，多加两个以 handler 方法用
+     *       来一对一地进行处理。
+     *       3. 在 ngx_http_variables.c 中有 args 和 limit_rate 两个内部变量设置了
+     *       set_handler，可以参考一下。
+     */
     if (v->set_handler) {
         vhcode = ngx_http_script_start_code(cf->pool, &lcf->codes,
                                    sizeof(ngx_http_script_var_handler_code_t));
@@ -936,6 +1002,14 @@ ngx_http_rewrite_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             return NGX_CONF_ERROR;
         }
 
+        /*
+         * QUESTION: 可以看到 ngx_http_script_var_handler_code_t 里面有 set_handler，
+         *           但是却没有 index，而对于外部变量，ngx_http_script_var_code_t 却有
+         *           index 成员，这是为什么呢？
+         *
+         * NOTE: 因为 set_handler 是内部变量定义过的，所以这个 set_handler 一定可以找
+         *       到变量的值(不需要关系它是否使用的是下标值还是什么其他的途径)
+         */
         vhcode->code = ngx_http_script_var_set_handler_code;
         vhcode->handler = v->set_handler;
         vhcode->data = v->data;
@@ -943,6 +1017,9 @@ ngx_http_rewrite_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_OK;
     }
 
+    /*
+     * NOTE: 如果没有设置 set_handler，说明这个变量不是内部变量
+     */
     vcode = ngx_http_script_start_code(cf->pool, &lcf->codes,
                                        sizeof(ngx_http_script_var_code_t));
     if (vcode == NULL) {
@@ -965,21 +1042,35 @@ ngx_http_rewrite_value(ngx_conf_t *cf, ngx_http_rewrite_loc_conf_t *lcf,
     ngx_http_script_value_code_t          *val;
     ngx_http_script_complex_value_code_t  *complex;
 
+    // NOTE: 数数变量值字符串里面有多少个 $ 符号，也就是变量插值用了几个已经存在的变量
+    //       而且还存在 $1 这样的捕获语法
     n = ngx_http_script_variables_count(value);
 
     if (n == 0) {
+        // NOTE: start_code 函数就是往 lcf->codes 里面分配 size 个字节的内存
         val = ngx_http_script_start_code(cf->pool, &lcf->codes,
                                          sizeof(ngx_http_script_value_code_t));
         if (val == NULL) {
             return NGX_CONF_ERROR;
         }
 
+        // QUESTION: 为什么数值要特殊对待，还在 value_code_t 里面专门用一个 value 字段来表示？
         n = ngx_atoi(value->data, value->len);
 
         if (n == NGX_ERROR) {
             n = 0;
         }
 
+        /* NOTE: code 字段是用来干啥的？
+         *       查看 ngx_http_script_value_code 函数发现做了几件事：
+         *       1. 由于是用 engine_t.ip 这个 u_char * 来表示目前执行到的指令，所以得
+         *          先强制转换为 ngx_http_script_value_code_t
+         *       2. 然后让 engine_t.ip 递增 sizeof(ngx_http_script_value_code_t)个字节
+         *       3. 然后把强制转换得到的 code_t 中的 len/data 字段赋给 engine_t.sp
+         *       4. 最后递增 e.sp
+         *
+         * GUESS: 我猜测所有的 code 都是上面这几个步骤
+         */
         val->code = ngx_http_script_value_code;
         val->value = (uintptr_t) n;
         val->text_len = (uintptr_t) value->len;
@@ -1006,6 +1097,7 @@ ngx_http_rewrite_value(ngx_conf_t *cf, ngx_http_rewrite_loc_conf_t *lcf,
     sc.variables = n;
     sc.complete_lengths = 1;
 
+    // NOTE: 这个函数是做啥？
     if (ngx_http_script_compile(&sc) != NGX_OK) {
         return NGX_CONF_ERROR;
     }

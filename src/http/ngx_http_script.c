@@ -418,6 +418,7 @@ ngx_http_script_variables_count(ngx_str_t *value)
 }
 
 
+// balus: 写下面这种函数，需要特别特别仔细
 ngx_int_t
 ngx_http_script_compile(ngx_http_script_compile_t *sc)
 {
@@ -425,6 +426,7 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
     ngx_str_t    name;
     ngx_uint_t   i, bracket;
 
+    // NOTE：初始化 flushes、lengths 和 values 这三个 ngx_array_t
     if (ngx_http_script_init_arrays(sc) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -435,28 +437,48 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
 
         if (sc->source->data[i] == '$') {
 
+            /*
+             * NOTE: $ 字符后面可以接多种字符：
+             *       1. 后面直接接变量名
+             *       2. 后面接 {变量名} ，这种其实是上一种的一个特殊情况
+             *       3. 后面接数字，表示子匹配(捕获)
+             */
+
+            // NOTE: 最后一个字符为 $，不合法
             if (++i == sc->source->len) {
                 goto invalid_variable;
             }
 
+            /*
+             * NOTE: 下面是在处理子匹配(或者说"捕获")
+             *       比如 rewrite ^/download/(.*)/mp3/(.*)/\..*$ /download/$1/mp3/$2.mp3
+             *       $ 后面接数字表示第几个捕获
+             *
+             * QUESTION: 捕获数不可用超过 9 个么？比如 $13 ?
+             *           但是按照 sc->capture_mask 来看，应该最多可以存在 64 个不同的捕获？
+             */
             if (sc->source->data[i] >= '1' && sc->source->data[i] <= '9') {
 #if (NGX_PCRE)
                 ngx_uint_t  n;
 
                 n = sc->source->data[i] - '0';
 
+                // QUESTION: dup_capture 只能说存在重复捕获，并不能指出有多少个、哪些
+                //           是重复捕获吧？
                 if (sc->captures_mask & ((ngx_uint_t) 1 << n)) {
                     sc->dup_capture = 1;
                 }
 
                 sc->captures_mask |= (ngx_uint_t) 1 << n;
 
+                // TODO: 这个具体做的啥？概括一下？
                 if (ngx_http_script_add_capture_code(sc, n) != NGX_OK) {
                     return NGX_ERROR;
                 }
 
                 i++;
 
+                // NOTE: 就不执行下面了？
                 continue;
 #else
                 ngx_conf_log_error(NGX_LOG_EMERG, sc->cf, 0,
@@ -466,13 +488,16 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
 #endif
             }
 
+            // NOTE: 比如 set $filename ${today}.log;
             if (sc->source->data[i] == '{') {
                 bracket = 1;
 
+                // NOTE: 最后一个字符为 {，不合法
                 if (++i == sc->source->len) {
                     goto invalid_variable;
                 }
 
+                // NOTE: 这个 i 相比于下面的 else，是加了 1 的
                 name.data = &sc->source->data[i];
 
             } else {
@@ -483,12 +508,39 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
             for ( /* void */ ; i < sc->source->len; i++, name.len++) {
                 ch = sc->source->data[i];
 
+                /* balus: 要是我，开始右括号，就会检查是否遇到左括号了，没有就表示不合法
+                 *
+                 *      if (ch == '}') {
+                 *
+                 *          if (!bracket) {
+                 *              goto invalid_variable;
+                 *          }
+                 *
+                 *          i++;
+                 *          bracket = 0;
+                 *          break;
+                 *      }
+                 *
+                 * QUESTION: 这里像下面做是有什么特别原因么？或者说右括号是组成变量名的合法元素？
+                 *           如果不是，并且 bracket == 0，那不就有问题？
+                 *
+                 * balus: 上面的担心是多于的， 如果是下面这种情况：
+                 *
+                 *        set $a "hello";
+                 *        set $b "$b}world";
+                 *
+                 * balus: 这种是完全合法的，即 $b == "hello}world"
+                 *        下面这个 if 只是为了"在已经有左花括号的情况下检查是否为右花括号"
+                 *        并不是单纯地检查"是否为右花括号"，因为只有右，没有左是完全合法的
+                 *
+                 */
                 if (ch == '}' && bracket) {
                     i++;
                     bracket = 0;
                     break;
                 }
 
+                // NOTE: 所以下面这些就是组成变量的合法字符了？
                 if ((ch >= 'A' && ch <= 'Z')
                     || (ch >= 'a' && ch <= 'z')
                     || (ch >= '0' && ch <= '9')
@@ -497,6 +549,7 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
                     continue;
                 }
 
+                // NOTE: 走到这里说明什么？
                 break;
             }
 
@@ -520,6 +573,7 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
             continue;
         }
 
+        // QUESTION: 这又是啥？
         if (sc->source->data[i] == '?' && sc->compile_args) {
             sc->args = 1;
             sc->compile_args = 0;
@@ -643,10 +697,13 @@ ngx_http_script_flush_no_cacheable_variables(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
 {
+    // QUESTION: 给这 3 个数组分配内存时，n 值为什么这么计算？
     ngx_uint_t   n;
 
+    // QUESTION: 为什么对 sc->flushes 做的检查和其他两个不一样？
     if (sc->flushes && *sc->flushes == NULL) {
         n = sc->variables ? sc->variables : 1;
+        // NOTE: 这个数组的元素为 ngx_uint_t
         *sc->flushes = ngx_array_create(sc->cf->pool, n, sizeof(ngx_uint_t));
         if (*sc->flushes == NULL) {
             return NGX_ERROR;
@@ -658,6 +715,7 @@ ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
                              + sizeof(ngx_http_script_var_code_t))
             + sizeof(uintptr_t);
 
+        // NOTE: 这个数组的元素的大小为 byte
         *sc->lengths = ngx_array_create(sc->cf->pool, n, 1);
         if (*sc->lengths == NULL) {
             return NGX_ERROR;
@@ -672,12 +730,14 @@ ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
                 + sizeof(uintptr_t) - 1)
             & ~(sizeof(uintptr_t) - 1);
 
+        // NOTE: 这个数组的元素的大小为 byte
         *sc->values = ngx_array_create(sc->cf->pool, n, 1);
         if (*sc->values == NULL) {
             return NGX_ERROR;
         }
     }
 
+    // QUESTION: 为什么重置为 0？
     sc->variables = 0;
 
     return NGX_OK;
@@ -1775,6 +1835,7 @@ ngx_http_script_set_var_code(ngx_http_script_engine_t *e)
 
     r = e->request;
 
+    // NOTE: 这个操作是为
     e->sp--;
 
     r->variables[code->index].len = e->sp->len;

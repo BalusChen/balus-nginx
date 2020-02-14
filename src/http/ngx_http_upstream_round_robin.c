@@ -27,6 +27,14 @@ static void ngx_http_upstream_empty_save_session(ngx_peer_connection_t *pc,
 #endif
 
 
+/*
+ * balus: 总的来说就是分了三种:
+ *            * non-backup server
+ *            * backup server
+ *            * proxy_pass
+ *         依次检查这三种类型的 server 是否存在，然后初始化
+ */
+
 ngx_int_t
 ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
     ngx_http_upstream_srv_conf_t *us)
@@ -71,10 +79,16 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
             return NGX_ERROR;
         }
 
+        // balus: 为什么要对 single 特殊对待？
         peers->single = (n == 1);
         peers->number = n;
+        // balus: 如果 w == n，那么说明每个 server 的 weight 都是 1
         peers->weighted = (w != n);
         peers->total_weight = w;
+        /*
+         * balus: 有一个地方我很疑惑的是，像下面这种把 us->host 的地址传给 name 的
+         *        作者是怎么知道 host 的生命周期 >= name 的？
+         */
         peers->name = &us->host;
 
         n = 0;
@@ -85,6 +99,13 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
                 continue;
             }
 
+            /*
+             * balus: 一个 server(ngx_http_upstream_server_t) 中可能包含有多个地址
+             *        对每个地址，我们都使用一个 peer 来表示，所有的 peer 虽然是一个数
+             *        组，但是却通过 ngx_http_upstream_rr_peer_t 中的 next 字段链接
+             *        成了一个链表
+             *        注意 i, j, n 三个 index 的变化
+             */
             for (j = 0; j < server[i].naddrs; j++) {
                 peer[n].sockaddr = server[i].addrs[j].sockaddr;
                 peer[n].socklen = server[i].addrs[j].socklen;
@@ -107,6 +128,24 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
         us->peer.data = peers;
 
         /* backup servers */
+
+        /*
+         * balus: 下面开始处理 backup server(这是啥呢?)
+         *        看下面这个 nginx.conf:
+         *
+         * http {
+         *     upstream backend {
+         *         server 192.168.1.111        weight=1 max_fails=5 fail_timeout=3;
+         *         sever  192.168.1.44:88      weight=3 max_fails=5 fail_timeout=3;
+         *         server 192.168.1.44         backup;
+         *         server unix:/tmp/backend3;
+         *      }
+         *  }
+         *
+         * balus: 像上面 192.168.1.44 这台服务器就是一台备用服务器，只有其它所有的非
+         *        backup 服务器出现故障或者忙的时候，才会请求 backup 服务器
+         *        nginx 把这两种服务器区别对待
+         */
 
         n = 0;
         w = 0;
@@ -134,6 +173,11 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
             return NGX_ERROR;
         }
 
+        /*
+         * balus: 为什么这里突然要设置 peers-single？ peers 不是指的是非 backup 么？
+         *        我的猜想是，peers->single 的含义是只有一台服务器，而走到这里说明 backup-server 的数量不为 0，
+         *        所以肯定不是 single
+         */
         peers->single = 0;
         backup->single = 0;
         backup->number = n;
@@ -168,6 +212,13 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
             }
         }
 
+        /* balus: 这一句怎么理解？
+         *        ngx_http_upstream_rr_peer_t 和 ngx_http_upstream_rr_peers_t
+         *        都有一个 next 字段用于链接
+         *        peer 链接的是；而 peers 链接的是
+         *        所以下面是把 non-backup 和 backup 这两类 server 链接在一起
+         */
+
         peers->next = backup;
 
         return NGX_OK;
@@ -175,6 +226,32 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
 
 
     /* an upstream implicitly defined by proxy_pass, etc. */
+
+    /*
+     * balus: 如果传入的 ngx_http_upstream_srv_conf_t 中的 server 字段为 null
+     *        说明 这个 upstream 是
+     *        那么 proxy_pass 这条指令是用来干啥的呢？
+     *
+     * http {
+     *     server {
+     *         listen      80;
+     *         server_name serverA;
+     *
+     *         location /hello {
+     *             proxy_pass http://localhost:8000/uri/;
+     *         }
+     *
+     *         location /world {
+     *             proxy_pass http://unix:/tmp/backend.socket:/uri/;
+     *         }
+     *     }
+     * }
+     *
+     * balus: 可见 proxy_pass 指令后面接着的是一个 url，用来将对该 location 的请求转发
+     *        到指定的 url
+     *
+     * NOTE: dash nginx:proxy_pass
+     */
 
     if (us->port == 0) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
@@ -240,12 +317,20 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
 }
 
 
+/*
+ * balus: 这个函数做了些啥呢？(Q)
+ */
 ngx_int_t
 ngx_http_upstream_init_round_robin_peer(ngx_http_request_t *r,
     ngx_http_upstream_srv_conf_t *us)
 {
     ngx_uint_t                         n;
     ngx_http_upstream_rr_peer_data_t  *rrp;
+
+    /*
+     * balus: r->upstream->peer 是一个 ngx_peer_connection_t，
+     *        里面的 data 居然存的是 ngx_http_upstream_rr_peer_data_t?
+     */
 
     rrp = r->upstream->peer.data;
 
@@ -258,21 +343,48 @@ ngx_http_upstream_init_round_robin_peer(ngx_http_request_t *r,
         r->upstream->peer.data = rrp;
     }
 
+    // balus: 注意 us->peer 是 ngx_http_upstream_peer_t(而不是 ngx_http_upstream_rr_peer_t)
     rrp->peers = us->peer.data;
     rrp->current = NULL;
+    // balus: config 字段用来干啥的？
     rrp->config = 0;
+
+    /*
+     * balus: number 表示的是该 peers_t 对应的 upstream_srv_conf 中所有 server 的
+     *        所有地址个数
+     *        我在想为什么不用 count，而用 number，感觉 number 有一种序号的味道。
+     */
 
     n = rrp->peers->number;
 
+    /*
+     * balus: 计算可用上游服务器列表的个数(其实是可用上游服务器 ip 的个数)
+     *        取的是 non-back server 和 backup server 二者较大值
+     *        有一个我不懂的地方是，number 明明表示的是可用服务器 ip 的个数
+     *        为什么不用服务器的个数呢？这二者并不能保证相等吧，在服务器上更大可能不等吧？
+     */
     if (rrp->peers->next && rrp->peers->next->number > n) {
         n = rrp->peers->next->number;
     }
 
+    /*
+     * balus: 用一个位图来记录上游服务器是否被选择过。
+     *        如果 n <= 64，那么用一个uintptr 就可以充当位图了
+     *        正好 ngx_http_upstream_rr_peer_data_t 中有个 uintptr_t 类型的 data
+     *        正好用来做这个位图？
+     *        有一个问题，这里用 data 我感觉是碰巧它是 uintptr_t 类型，但是它的实际作用
+     *        是什么呢？(Q)
+     */
     if (n <= 8 * sizeof(uintptr_t)) {
         rrp->tried = &rrp->data;
         rrp->data = 0;
 
     } else {
+        /*
+         * balus: 如果 n > 64，那么就需要分配一块内存来用了
+         *        注意下面这种写法，是向上取整，比如 n = 75，已经 > 64 了，所以应该需要
+         *        2 个 uintptr 来作位图，所以 75+63 / 64 = 2
+         */
         n = (n + (8 * sizeof(uintptr_t) - 1)) / (8 * sizeof(uintptr_t));
 
         rrp->tried = ngx_pcalloc(r->pool, n * sizeof(uintptr_t));
@@ -281,6 +393,11 @@ ngx_http_upstream_init_round_robin_peer(ngx_http_request_t *r,
         }
     }
 
+    /*
+     * balus: get 是用来选定该连接哪个上游服务器
+     *        free 是释放该上游服务器，释放是啥意思呢？(Q)
+     *        tries 表示可以尝试几次，等于上游服务器的数目加上备用服务器的数量
+     */
     r->upstream->peer.get = ngx_http_upstream_get_round_robin_peer;
     r->upstream->peer.free = ngx_http_upstream_free_round_robin_peer;
     r->upstream->peer.tries = ngx_http_upstream_tries(rrp->peers);
@@ -295,6 +412,10 @@ ngx_http_upstream_init_round_robin_peer(ngx_http_request_t *r,
 }
 
 
+/*
+ * balus: 这个函数怎么感觉有点像上面 init_round_robin 和 init_peer 的结合体？
+ *        具体是用来干啥的呢？
+ */
 ngx_int_t
 ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
     ngx_http_upstream_resolved_t *ur)
@@ -334,13 +455,16 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
     peers->number = ur->naddrs;
     peers->name = &ur->host;
 
+    // balus:  ngx_http_upstream_resolved_t 中 sockaddr 和 addr 这两个字段的关系？
     if (ur->sockaddr) {
         peer[0].sockaddr = ur->sockaddr;
         peer[0].socklen = ur->socklen;
         peer[0].name = ur->name.data ? ur->name : ur->host;
+        // balus: weight 和 effective_weight 的设置有什么要求么？为啥是 1？
         peer[0].weight = 1;
         peer[0].effective_weight = 1;
         peer[0].current_weight = 0;
+        // balus: 为啥 max_conns 设置为 0？
         peer[0].max_conns = 0;
         peer[0].max_fails = 1;
         peer[0].fail_timeout = 10;
@@ -366,6 +490,7 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
                 return NGX_ERROR;
             }
 
+            // balus: ngx_sock_ntop ==> network to presentation
             len = ngx_sock_ntop(sockaddr, socklen, p, NGX_SOCKADDR_STRLEN, 1);
 
             peer[i].sockaddr = sockaddr;
@@ -413,9 +538,16 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
 }
 
 
+/*
+ * balus: 如何选取上游服务器
+ */
 ngx_int_t
 ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
 {
+    /*
+     * balus：这种 coding-style 还是第一次见，
+     *        虽然在 agentzh 在 openresty 里头的 nginx-coding-style-guide 提到过
+     */
     ngx_http_upstream_rr_peer_data_t  *rrp = data;
 
     ngx_int_t                      rc;
@@ -426,6 +558,7 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                    "get rr peer, try: %ui", pc->tries);
 
+    // balus: 为什么在这里？设置这两个字段？
     pc->cached = 0;
     pc->connection = NULL;
 
@@ -433,12 +566,14 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
     ngx_http_upstream_rr_peers_wlock(peers);
 
     if (peers->single) {
+        // balus: 如果是 single 的话，说明只有一台服务器(backup 的也没有)
         peer = peers->peer;
 
         if (peer->down) {
             goto failed;
         }
 
+        // balus: conns 和 max_conns 这两个字段的含义？(Q)
         if (peer->max_conns && peer->conns >= peer->max_conns) {
             goto failed;
         }
@@ -449,12 +584,14 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
 
         /* there are several peers */
 
+        // balus: 真正的负载均衡在这里？
         peer = ngx_http_upstream_get_peer(rrp);
 
         if (peer == NULL) {
             goto failed;
         }
 
+        // balus: %i 这个 format-specifier 表示啥？
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, pc->log, 0,
                        "get rr peer, current: %p %i",
                        peer, peer->current_weight);
@@ -464,6 +601,7 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
     pc->socklen = peer->socklen;
     pc->name = &peer->name;
 
+    // balus: 找到了，conns 字段表示的是 nginx 连接到这台服务器的连接数
     peer->conns++;
 
     ngx_http_upstream_rr_peers_unlock(peers);
@@ -472,6 +610,7 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
 
 failed:
 
+    // balus: peers->next 表示的是 backup-server 这个 peers_t 结构
     if (peers->next) {
 
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, pc->log, 0, "backup servers");
@@ -487,6 +626,7 @@ failed:
 
         ngx_http_upstream_rr_peers_unlock(peers);
 
+        // balus: 递归？一条链表这样做好像还挺自然的？
         rc = ngx_http_upstream_get_round_robin_peer(pc, rrp);
 
         if (rc != NGX_BUSY) {
@@ -522,21 +662,40 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
     p = 0;
 #endif
 
+    /*
+     * balus: 这里有个地方我不太懂的是，里面有 tried 位图和各种 weight
+     *         感觉像是两种不同的负载均衡的机制，还是说这两者组成了一种的负载均衡，
+     *         那么他们是怎么配合的呢？(Q)
+     */
     for (peer = rrp->peers->peer, i = 0;
          peer;
          peer = peer->next, i++)
     {
+        // balus: m 和 n 各表示什么？(Q)
         n = i / (8 * sizeof(uintptr_t));
         m = (uintptr_t) 1 << i % (8 * sizeof(uintptr_t));
 
+        // balus: ?
         if (rrp->tried[n] & m) {
             continue;
         }
 
+        // balus: 检查该服务器是否关闭了。
         if (peer->down) {
             continue;
         }
 
+        /*
+         * balus: 注意这里，进行了三次检查：
+         *        1. 是否设置了 max_fails (不为 0 就表示设置了)
+         *        2. 目前 fail 的次数是否已经达到了 max_fails
+         *        3. 具体上一次检查的时间是否已经过了 fail_timeout
+         *
+         * balus: 所以其实从这里可以知道，fails、max_fails、fail_timeout 这三个字段是一起用的
+         *         只有在 fail_timeout 时间间隔内，fail 的次数达到了 max_fail，才不会选用这台服务器
+         *         因为这样很有可能表明这台服务器出问题了
+         *         但是过了 fail_timeout 又可以继续重试
+         */
         if (peer->max_fails
             && peer->fails >= peer->max_fails
             && now - peer->checked <= peer->fail_timeout)
@@ -544,13 +703,19 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
             continue;
         }
 
+        // balus: max_conns 不为 0 表示设置了到这台服务器的最大连接数
         if (peer->max_conns && peer->conns >= peer->max_conns) {
             continue;
         }
 
+        /*
+         * balus: 经过了这么多个 if 到这里，这个 peer 满足了所有的条件，说明他很久没有被选中了
+         *         所以增加他的 current_weight，把负载往这个 peer 这里偏一点
+         */
         peer->current_weight += peer->effective_weight;
         total += peer->effective_weight;
 
+        // balus: 这里没有看懂？为什么要递增 effective_weight？(Q)
         if (peer->effective_weight < peer->weight) {
             peer->effective_weight++;
         }
@@ -567,10 +732,18 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
 
     rrp->current = best;
 
+    // balus: 这个 peer 被选中了，所以需要更新 tried 位图
     n = p / (8 * sizeof(uintptr_t));
     m = (uintptr_t) 1 << p % (8 * sizeof(uintptr_t));
 
     rrp->tried[n] |= m;
+
+    /*
+     * balus: 又没有搞懂？为什么要减去 total？(Q)
+     *         上游服务器中可能有多个可用，total 就是整个 for 循环计算出来的所有可用的服务器的 effective_weight 之和
+     *         虽然后面只选了一个 best。
+     *         为什么要这样减呢？这个和前面的 peer->effective_weight++又没有联系呢？
+     */
 
     best->current_weight -= total;
 
@@ -582,6 +755,9 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
 }
 
 
+/*
+ * balus: 释放一台上游服务器
+ */
 void
 ngx_http_upstream_free_round_robin_peer(ngx_peer_connection_t *pc, void *data,
     ngx_uint_t state)
@@ -598,6 +774,7 @@ ngx_http_upstream_free_round_robin_peer(ngx_peer_connection_t *pc, void *data,
 
     peer = rrp->current;
 
+    // balus: 注意 peers 和 peer
     ngx_http_upstream_rr_peers_rlock(rrp->peers);
     ngx_http_upstream_rr_peer_lock(rrp->peers, peer);
 
@@ -620,9 +797,11 @@ ngx_http_upstream_free_round_robin_peer(ngx_peer_connection_t *pc, void *data,
         peer->checked = now;
 
         if (peer->max_fails) {
+            // balus: 怎么理解这种计算方法？(Q)
             peer->effective_weight -= peer->weight / peer->max_fails;
 
             if (peer->fails >= peer->max_fails) {
+                // balus: 有个问题，这里能不能多 log 一点信息，比如记录一下是哪一台 server？
                 ngx_log_error(NGX_LOG_WARN, pc->log, 0,
                               "upstream server temporarily disabled");
             }

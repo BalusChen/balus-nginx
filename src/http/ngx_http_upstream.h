@@ -87,6 +87,10 @@ typedef ngx_int_t (*ngx_http_upstream_init_peer_pt)(ngx_http_request_t *r,
 typedef struct {
     ngx_http_upstream_init_pt        init_upstream;
     ngx_http_upstream_init_peer_pt   init;
+    /*
+     * balus: data 里面存储的是啥，我看到的有 ngx_http_upstream_rr_peers_t
+     *        是不是说不同的模块会存不同的东西？应该是，不然用 void* 干啥？
+     */
     void                            *data;
 } ngx_http_upstream_peer_t;
 
@@ -119,6 +123,13 @@ typedef struct {
 
 
 struct ngx_http_upstream_srv_conf_s {
+    /*
+     * balus: 有点搞不懂，srv_conf 应该是存储的是一个 upstream{} 配置块里面的内容吧
+     *         里面的 servers 数组就是每个上游服务器的配置，(所以 main_conf 应该是包含了所有 upstream{} 配置块的)
+     *         那为什么在一个 upstream{} 中只有一个 peer 呢？
+     *
+     * balus: (UPDATE) 类型看错了，这个 peer 不是 ngx_http_upstream_rr_peer_t 类型。
+     */
     ngx_http_upstream_peer_t         peer;
     void                           **srv_conf;
 
@@ -296,12 +307,14 @@ typedef struct {
 } ngx_http_upstream_headers_in_t;
 
 
+// balus: 这个结构体是用来干啥的？sockaddr 和 addrs 各自存储的是什么地址呢？
 typedef struct {
     ngx_str_t                        host;
     in_port_t                        port;
     ngx_uint_t                       no_port; /* unsigned no_port:1 */
 
     ngx_uint_t                       naddrs;
+    // balus: 这个 addrs 和下面的 sockaddr 有何不同？为什么要有两个？
     ngx_resolver_addr_t             *addrs;
 
     struct sockaddr                 *sockaddr;
