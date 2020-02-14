@@ -1,3 +1,3 @@
 # Introduction
 
-Way to Nginx.
+My way to Nginx.
