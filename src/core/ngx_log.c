@@ -392,6 +392,7 @@ ngx_log_init(u_char *prefix)
         ngx_log_file.fd = ngx_stderr;
     }
 
+    // NOTE: 用 p 来表示这个 name 是否是在堆上
     if (p) {
         ngx_free(p);
     }

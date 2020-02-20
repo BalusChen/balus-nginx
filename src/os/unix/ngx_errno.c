@@ -55,6 +55,11 @@ ngx_strerror_init(void)
      * malloc() is used and possible errors are logged using strerror().
      */
 
+    /*
+     * NOTE: NGX_SYS_NERR 是该系统上 errno 的个数
+     *       这里把所有 errno 信息都记录在 ngx_sys_errlist 数组中，错误号作为其下标，错误信息作为其值
+     *       这样后续就不用进行系统调用了，而是直接从这个数组中取出就可以了
+     */
     len = NGX_SYS_NERR * sizeof(ngx_str_t);
 
     ngx_sys_errlist = malloc(len);

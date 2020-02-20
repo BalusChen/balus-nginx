@@ -117,6 +117,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         exit(2);
     }
 
+    // NOTE: 设置 master 进程的名字，这个可以在 ps 时看到
     p = ngx_cpymem(title, master_process, sizeof(master_process) - 1);
     for (i = 0; i < ngx_argc; i++) {
         *p++ = ' ';
@@ -130,6 +131,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
+    // TODO: cache manager/loader 这一块我还不熟悉，需要注意
     ngx_start_cache_manager_processes(cycle, 0);
 
     ngx_new_binary = 0;

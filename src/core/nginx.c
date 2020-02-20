@@ -203,14 +203,17 @@ main(int argc, char *const *argv)
 
     ngx_debug_init();
 
+    // NOTE: 把本系统上所有的 errno 都记录在一个全局的数组 ngx_sys_errlist 中
     if (ngx_strerror_init() != NGX_OK) {
         return 1;
     }
 
+    // NOTE: 解析命令行选项，根据它们来设置好一些全局变量
     if (ngx_get_options(argc, argv) != NGX_OK) {
         return 1;
     }
 
+    // NOTE: ngx_show_version/ngx_test_config 就是在前一步 ngx_get_options 里面解析命令行选项之后设置的
     if (ngx_show_version) {
         ngx_show_version_info();
 
@@ -221,6 +224,7 @@ main(int argc, char *const *argv)
 
     /* TODO */ ngx_max_sockets = -1;
 
+    // NOTE: 设置好所有时间缓存字符串的长度
     ngx_time_init();
 
 #if (NGX_PCRE)
@@ -230,6 +234,7 @@ main(int argc, char *const *argv)
     ngx_pid = ngx_getpid();
     ngx_parent = ngx_getppid();
 
+    // NOTE: 构造日志文件名并打开
     log = ngx_log_init(ngx_prefix);
     if (log == NULL) {
         return 1;
@@ -258,6 +263,7 @@ main(int argc, char *const *argv)
         return 1;
     }
 
+    // NOTE: 前面解析了启动参数，这里
     if (ngx_process_options(&init_cycle) != NGX_OK) {
         return 1;
     }
@@ -280,14 +286,18 @@ main(int argc, char *const *argv)
 
     ngx_slab_sizes_init();
 
+    // NOTE: 注意这里，这里和 Nginx 退出时的操作对应着
     if (ngx_add_inherited_sockets(&init_cycle) != NGX_OK) {
         return 1;
     }
 
+    // NOTE: 给每个 module 分配一个 index 并且把它和名字对应
+    //       以及计算总的 module 个数，以及最大可以拥有的 module 数(因为还有 dynamic module)
     if (ngx_preinit_modules() != NGX_OK) {
         return 1;
     }
 
+    // NOTE: ngx_init_cycle 函数里面就把所有配置项给解析出来了，所以这之后都可以用了
     cycle = ngx_init_cycle(&init_cycle);
     if (cycle == NULL) {
         if (ngx_test_config) {
@@ -304,6 +314,7 @@ main(int argc, char *const *argv)
                            cycle->conf_file.data);
         }
 
+        // NOTE: -t 和 -T 的区别就在于 -T 会把 nginx.conf 给 dump 一下
         if (ngx_dump_config) {
             cd = cycle->config_dump.elts;
 
@@ -324,16 +335,24 @@ main(int argc, char *const *argv)
         return 0;
     }
 
+    // NOTE: ngx_signal 也是在 ngx_get_options 里面设置的。用于 nginx -s reload 这种形式
     if (ngx_signal) {
         return ngx_signal_process(cycle, ngx_signal);
     }
 
     ngx_os_status(cycle->log);
 
+    // QUESTION: ngx_cycle 是干啥用的？
     ngx_cycle = cycle;
 
+    // QUESTION: 这个时候 nginx.conf 已经解析了么？
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
+    // NOTE: master 是指 master_process 这个配置项，用于决定是否启动 worker 进程，一般是 Nginx Developer 使用
+    //       ngx_process 是来标识每类进程的身份的，比如:
+    //          1. master 进程就是 NGX_PROCESS_MASTER
+    //          2. worker 进程就是 NGX_PROCESS_WORKER
+    //          3. cache manager 就是 NGX_PROCESS_HELPER
     if (ccf->master && ngx_process == NGX_PROCESS_SINGLE) {
         ngx_process = NGX_PROCESS_MASTER;
     }
@@ -352,6 +371,7 @@ main(int argc, char *const *argv)
         ngx_daemonized = 1;
     }
 
+    // QUESTION: 如果是 inherited，那么原来的进程一定是 daemon，现在新起的也是？
     if (ngx_inherited) {
         ngx_daemonized = 1;
     }
@@ -373,6 +393,7 @@ main(int argc, char *const *argv)
         }
     }
 
+    // NOTE: 在这之前，日志都是打在 stderr，这之后才开始打到日志文件
     ngx_use_stderr = 0;
 
     if (ngx_process == NGX_PROCESS_SINGLE) {
@@ -660,6 +681,7 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         return NGX_INVALID_PID;
     }
 
+    // NOTE: 注意这一块
     var = ngx_alloc(sizeof(NGINX_VAR)
                     + cycle->listening.nelts * (NGX_INT32_LEN + 1) + 2,
                     cycle->log);
@@ -738,6 +760,10 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
 }
 
 
+/*
+ * NOTE: 从这个函数就可以了解到 nginx 这些选项的含义和作用
+ *       而且 nginx 是自己手动解析的所有选项参数，而不是用 getopt 等函数
+ */
 static ngx_int_t
 ngx_get_options(int argc, char *const *argv)
 {
@@ -778,6 +804,7 @@ ngx_get_options(int argc, char *const *argv)
 
             case 'T':
                 ngx_test_config = 1;
+                // NOTE: dump 就是把整个 nginx.conf 都在终端上打印
                 ngx_dump_config = 1;
                 break;
 
@@ -879,6 +906,7 @@ ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
     size_t     len;
     ngx_int_t  i;
 
+    // QUESTION: ngx_os_argv 和 ngx_argv 这俩的区别是什么？
     ngx_os_argv = (char **) argv;
     ngx_argc = argc;
 
@@ -890,6 +918,7 @@ ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
     for (i = 0; i < argc; i++) {
         len = ngx_strlen(argv[i]) + 1;
 
+        // NOTE: 这里没有用内存池
         ngx_argv[i] = ngx_alloc(len, cycle->log);
         if (ngx_argv[i] == NULL) {
             return NGX_ERROR;
@@ -968,6 +997,7 @@ ngx_process_options(ngx_cycle_t *cycle)
 #endif
     }
 
+    // NOTE: 如果启动 nginx 时通过 -c 选项指定了 conf 文件位置，ngx_conf_file 就是记录这个文件名的
     if (ngx_conf_file) {
         cycle->conf_file.len = ngx_strlen(ngx_conf_file);
         cycle->conf_file.data = ngx_conf_file;
@@ -980,6 +1010,7 @@ ngx_process_options(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    // QUESTION: 下面这是在干啥？
     for (p = cycle->conf_file.data + cycle->conf_file.len - 1;
          p > cycle->conf_file.data;
          p--)

@@ -240,6 +240,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     senv = environ;
 
 
+    // NOTE: 下面开始解析 conf 文件
     ngx_memzero(&conf, sizeof(ngx_conf_t));
     /* STUB: init array ? */
     conf.args = ngx_array_create(pool, 10, sizeof(ngx_str_t));
@@ -255,6 +256,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
 
+    // NOTE: conf_ctx 用来存储配置项结构体的
     conf.ctx = cycle->conf_ctx;
     conf.cycle = cycle;
     conf.pool = pool;
