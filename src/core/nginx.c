@@ -774,6 +774,9 @@ ngx_get_options(int argc, char *const *argv)
 
         p = (u_char *) argv[i];
 
+        // NOTE: 每个选项都是以短横线开头，有的后面带参数，有的不带
+        //       nginx -V
+        //       nginx -p /home/balus/NGINX -s reload
         if (*p++ != '-') {
             ngx_log_stderr(0, "invalid option: \"%s\"", argv[i]);
             return NGX_ERROR;
@@ -809,10 +812,12 @@ ngx_get_options(int argc, char *const *argv)
                 break;
 
             case 'q':
+                // QUESTION: 这个具体用来控制啥？不太懂
                 ngx_quiet_mode = 1;
                 break;
 
             case 'p':
+                // NOTE: 支持 nginx -p/home/balus/NGINX 这种无空格用法
                 if (*p) {
                     ngx_prefix = p;
                     goto next;
@@ -827,6 +832,7 @@ ngx_get_options(int argc, char *const *argv)
                 return NGX_ERROR;
 
             case 'c':
+                // NOTE: 和 -p 一样支持 nginx -c/home/balus/NGINX/conf/nginx.conf 这种不带空格的用法
                 if (*p) {
                     ngx_conf_file = p;
                     goto next;
@@ -841,6 +847,7 @@ ngx_get_options(int argc, char *const *argv)
                 return NGX_ERROR;
 
             case 'g':
+                // NOTE: 和 -p、-c 一样支持无空格用法
                 if (*p) {
                     ngx_conf_params = p;
                     goto next;
@@ -855,6 +862,7 @@ ngx_get_options(int argc, char *const *argv)
                 return NGX_ERROR;
 
             case 's':
+                // NOTE: 所有带参数的命令行选项都支持无空格用法，这种用法是继承自哪呢？
                 if (*p) {
                     ngx_signal = (char *) p;
 
@@ -943,10 +951,17 @@ ngx_process_options(ngx_cycle_t *cycle)
     u_char  *p;
     size_t   len;
 
+    // NOTE: nginx -p /home/balus/NGINX
     if (ngx_prefix) {
         len = ngx_strlen(ngx_prefix);
         p = ngx_prefix;
 
+        /*
+         *  NOTE: 检查 prefix 的最后一个字符是不是路径分隔符 '/'
+         *        如果不是，那么新建一个最后一个字符为 / 的 prefix
+         *        那这样，是不是在指定 prefix 的时候最好带上 /，这样效率更高一点？
+         *        但是好像只是启动更快一点
+         */
         if (len && !ngx_path_separator(p[len - 1])) {
             p = ngx_pnalloc(cycle->pool, len + 1);
             if (p == NULL) {
@@ -957,6 +972,10 @@ ngx_process_options(ngx_cycle_t *cycle)
             p[len++] = '/';
         }
 
+        /*
+         * QUESTION: 为啥 conf_prefix 和 prefix 一样？conf_prefix 应该是 prefix 的子目录吧？
+         *           比如 prefix=/home/balus/Nginx，conf_prefix 就是 /home/balus/NGINX/conf 这样吧？
+         */
         cycle->conf_prefix.len = len;
         cycle->conf_prefix.data = p;
         cycle->prefix.len = len;
@@ -1006,6 +1025,11 @@ ngx_process_options(ngx_cycle_t *cycle)
         ngx_str_set(&cycle->conf_file, NGX_CONF_PATH);
     }
 
+    /*
+     * QUESTION: 为什么 conf_prefix 设置为 0？
+     *           把 conf_prefix 设置为 0，那么组装成 full name 时就是用 prefix + conf_file
+     *           而不是用 conf_prefix + conf_file
+     */
     if (ngx_conf_full_name(cycle, &cycle->conf_file, 0) != NGX_OK) {
         return NGX_ERROR;
     }
