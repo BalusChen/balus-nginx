@@ -477,6 +477,9 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
     ngx_int_t         s;
     ngx_listening_t  *ls;
 
+    /*
+     * NOTE: 监听描述符是通过"NGINX"这个环境变量传递的
+     */
     inherited = (u_char *) getenv(NGINX_VAR);
 
     if (inherited == NULL) {
@@ -517,12 +520,17 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
         }
     }
 
+    /*
+     * ATTENTION: 最后一轮 for 循环体 p 指向最后一个字符，v = p + 1，指向 \0，
+     *            然后继续 p++，p 也指向 \0，退出，所以最后二者应该是在同一个位置
+     */
     if (v != p) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                       "invalid socket number \"%s\" in " NGINX_VAR
                       " environment variable, ignoring", v);
     }
 
+    // QUESTION: 设置这个全局标志位有什么用呢？
     ngx_inherited = 1;
 
     return ngx_set_inherited_sockets(cycle);
@@ -682,7 +690,13 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         return NGX_INVALID_PID;
     }
 
-    // NOTE: 注意这一块
+    /*
+     * NOTE: 在 exec 新的可执行文件之前，先把监听描述符都通过"NGINX"这个环境变量记录下来
+     *       后面新的 master 起来之后，由于这些 fd 都没有设置 FD_CLOEXEC 标志位，所以在
+     *       新的 master 里面是可以直接使用的
+     *
+     * NOTE: 这里和 ngx_add_inherited_sockets 是呼应的，一个存一个取
+     */
     var = ngx_alloc(sizeof(NGINX_VAR)
                     + cycle->listening.nelts * (NGX_INT32_LEN + 1) + 2,
                     cycle->log);
@@ -691,6 +705,10 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         return NGX_INVALID_PID;
     }
 
+    /*
+     * ATTENTION: 这里虽然加了一个=，但是 sizeof 和 strlen 不同，它会把字符串结尾的\0算入内
+     *            所以如果是用 strlen，就得 strlen(NGINX_VAR) + 1
+     */
     p = ngx_cpymem(var, NGINX_VAR "=", sizeof(NGINX_VAR));
 
     ls = cycle->listening.elts;

@@ -160,6 +160,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
         }
 
         ls[i].socklen = sizeof(ngx_sockaddr_t);
+        // NOTE: getsockname 返回指定套接字的当前地址
         if (getsockname(ls[i].fd, ls[i].sockaddr, &ls[i].socklen) == -1) {
             ngx_log_error(NGX_LOG_CRIT, cycle->log, ngx_socket_errno,
                           "getsockname() of the inherited "
@@ -169,6 +170,10 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
             continue;
         }
 
+        /*
+         * NOTE: ngx_sockaddr_t 是 sockaddr, sockaddr_in, sockaddr_in6, sockaddr_un 的 union
+         *       所以比它还大是不存在的，那么为什么 getsockname 导致这种情况呢？
+         */
         if (ls[i].socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
             ls[i].socklen = sizeof(ngx_sockaddr_t);
         }
@@ -207,6 +212,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
             return NGX_ERROR;
         }
 
+        // NOTE: ngx_sock_ntop 把地址转换为字符串格式
         len = ngx_sock_ntop(ls[i].sockaddr, ls[i].socklen,
                             ls[i].addr_text.data, len, 1);
         if (len == 0) {
@@ -215,10 +221,12 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
         ls[i].addr_text.len = len;
 
+        // QUESTION: backlog 设置为 -1 表示什么？无限？
         ls[i].backlog = NGX_LISTEN_BACKLOG;
 
         olen = sizeof(int);
 
+        // NOTE: 获取到该 socket 的类型，STREAM, DGRAM, RAW, SEQ_PACKET...
         if (getsockopt(ls[i].fd, SOL_SOCKET, SO_TYPE, (void *) &ls[i].type,
                        &olen)
             == -1)
@@ -256,6 +264,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
         }
 
 #if 0
+        // QUESTION: FIB 是用来干什么的？
         /* SO_SETFIB is currently a set only option */
 
 #if (NGX_HAVE_SETFIB)
@@ -281,6 +290,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
         reuseport = 0;
         olen = sizeof(int);
 
+        // NOTE: 在 FreeBSD 12+ 上使用 SO_REUSEPORT_LB
 #ifdef SO_REUSEPORT_LB
 
         if (getsockopt(ls[i].fd, SOL_SOCKET, SO_REUSEPORT_LB,
@@ -297,6 +307,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
 #else
 
+        // QUESTION: 为什么不直接把 ls[i].reuseport 传进去呢？ 这样有什么问题么？
         if (getsockopt(ls[i].fd, SOL_SOCKET, SO_REUSEPORT,
                        (void *) &reuseport, &olen)
             == -1)
@@ -316,6 +327,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
             continue;
         }
 
+        // QUESTION: TCP_FASTOPEN 的作用？
 #if (NGX_HAVE_TCP_FASTOPEN)
 
         olen = sizeof(int);
