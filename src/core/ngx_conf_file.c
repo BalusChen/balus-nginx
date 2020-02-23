@@ -888,6 +888,9 @@ ngx_conf_full_name(ngx_cycle_t *cycle, ngx_str_t *name, ngx_uint_t conf_prefix)
 {
     ngx_str_t  *prefix;
 
+    /*
+     *  QUESTION: conf_prefix 和 prefix 的区别？两个都是从根目录开始的么？
+     */
     prefix = conf_prefix ? &cycle->conf_prefix : &cycle->prefix;
 
     return ngx_get_full_name(cycle->pool, prefix, name);

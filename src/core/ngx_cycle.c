@@ -171,6 +171,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         return NULL;
     }
 
+    // QUESTION: 这里不太懂，继承监听描述符具体是怎么做的？
     n = old_cycle->listening.nelts ? old_cycle->listening.nelts : 10;
 
     if (ngx_array_init(&cycle->listening, pool, n, sizeof(ngx_listening_t))
@@ -220,6 +221,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
 
     for (i = 0; cycle->modules[i]; i++) {
+        // NOTE: 这里只处理 core 模块
         if (cycle->modules[i]->type != NGX_CORE_MODULE) {
             continue;
         }
@@ -624,6 +626,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
     pool->log = cycle->log;
 
+    // NOTE: 所有模块的 init_module 方法在这里调用的，但是他和 init_master 有什么不同呢？
     if (ngx_init_modules(cycle) != NGX_OK) {
         /* fatal */
         exit(1);
@@ -699,6 +702,7 @@ old_shm_zone_done:
     ls = old_cycle->listening.elts;
     for (i = 0; i < old_cycle->listening.nelts; i++) {
 
+        // QUESTION: remain 是啥意思？
         if (ls[i].remain || ls[i].fd == (ngx_socket_t) -1) {
             continue;
         }

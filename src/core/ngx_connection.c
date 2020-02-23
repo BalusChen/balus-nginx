@@ -164,6 +164,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
             ngx_log_error(NGX_LOG_CRIT, cycle->log, ngx_socket_errno,
                           "getsockname() of the inherited "
                           "socket #%d failed", ls[i].fd);
+            // QUESTION: ignore 标志位用来干啥的？
             ls[i].ignore = 1;
             continue;
         }

@@ -951,7 +951,11 @@ ngx_process_options(ngx_cycle_t *cycle)
     u_char  *p;
     size_t   len;
 
-    // NOTE: nginx -p /home/balus/NGINX
+    /*
+     * NOTE: 1. 如果命令行选项中有通过 -p 选项指定工作目录，比如 -p /home/balus/NGINX
+     *          那么 prefix 和 conf_prefix 都设置为工作目录
+     *       2. 否则 prefix 设置为 /usr/local/nginx/，conf_prefix 设置为 conf/
+     */
     if (ngx_prefix) {
         len = ngx_strlen(ngx_prefix);
         p = ngx_prefix;
@@ -974,7 +978,9 @@ ngx_process_options(ngx_cycle_t *cycle)
 
         /*
          * QUESTION: 为啥 conf_prefix 和 prefix 一样？conf_prefix 应该是 prefix 的子目录吧？
-         *           比如 prefix=/home/balus/Nginx，conf_prefix 就是 /home/balus/NGINX/conf 这样吧？
+         *           比如 prefix=/home/balus/NGINX，CONF_PREFIX 就是 /home/balus/NGINX/conf 这样吧？
+         *           看下面的逻辑，如果我 nginx -p /home/balus/NGINX，没有指定 -c 选项，
+         *           那么 cycle->conf_file 被设置为 conf/nginx.conf，这个和 conf_prefix 组合就是对的
          */
         cycle->conf_prefix.len = len;
         cycle->conf_prefix.data = p;
@@ -1029,12 +1035,23 @@ ngx_process_options(ngx_cycle_t *cycle)
      * QUESTION: 为什么 conf_prefix 设置为 0？
      *           把 conf_prefix 设置为 0，那么组装成 full name 时就是用 prefix + conf_file
      *           而不是用 conf_prefix + conf_file
+     *
+     * NOTE: 1. 在没有通过 -c 指定配置文件时，conf_file="conf/nginx.conf"
+     *          这个时候加上 prefix(不管是通过 -p 指定的还是默认的)都正好是配置文件的绝对路径
+     *       2. 如果使用了 -c 来指定配置文件，并且用的是绝对路径，会直接返回这个绝对路径
+     *       3. 如果使用了 -c 来指定配置文件，但是用的是相对路径，那么会进行 prefix + conf_file 的拼接
+     *
+     * QUESTION: 所以现在我的问题转换为为什么要有 conf_prefix 这个变量？
      */
     if (ngx_conf_full_name(cycle, &cycle->conf_file, 0) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    // QUESTION: 下面这是在干啥？
+    /*
+     * NOTE: 到这里 cycle->conf_file 已经是配置文件的完整路径名了，比如 /home/balus/NGINX/conf/nginx.conf
+     *       此时从后往前找到第一个路径分隔符，在这之前的就是 conf_prefix 了
+     *       这说明前面设置的 conf_prefix 是不准确的么？
+     */
     for (p = cycle->conf_file.data + cycle->conf_file.len - 1;
          p > cycle->conf_file.data;
          p--)
