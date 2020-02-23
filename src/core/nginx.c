@@ -263,11 +263,12 @@ main(int argc, char *const *argv)
         return 1;
     }
 
-    // NOTE: 前面解析了启动参数，这里
+    // NOTE: 前面解析了命令行参数，这里根据参数值来确定配置文件及其他相关信息
     if (ngx_process_options(&init_cycle) != NGX_OK) {
         return 1;
     }
 
+    // NOTE: 确定页大小、缓存行大小、cpu 个数、最大可打开的 fd 的个数以及设置随机数种子
     if (ngx_os_init(log) != NGX_OK) {
         return 1;
     }

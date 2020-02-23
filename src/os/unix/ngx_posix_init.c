@@ -82,6 +82,7 @@ ngx_os_init(ngx_log_t *log)
 
     ngx_max_sockets = (ngx_int_t) rlmt.rlim_cur;
 
+    // QUESTION: 这个宏是什么意思？
 #if (NGX_HAVE_INHERITED_NONBLOCK || NGX_HAVE_ACCEPT4)
     ngx_inherited_nonblocking = 1;
 #else
@@ -89,6 +90,7 @@ ngx_os_init(ngx_log_t *log)
 #endif
 
     tp = ngx_timeofday();
+    // 和 srand(3) 一样，srandom()也是为后续的 random() 调用设置初始的种子值
     srandom(((unsigned) ngx_pid << 16) ^ tp->sec ^ tp->msec);
 
     return NGX_OK;
