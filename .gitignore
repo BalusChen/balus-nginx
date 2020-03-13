@@ -2,3 +2,7 @@
 .DS_Store
 .ccls-cache/
 .idea/
+3rd/
+notes/
+objs/
+cmake-build-debug/
