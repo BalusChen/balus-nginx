@@ -16,14 +16,79 @@ include_directories(src/os/unix)
 include_directories(src/stream)
 include_directories(/usr/local/opt/pcre/include)
 include_directories(/usr/local/opt/openssl/include)
+# lua module
+include_directories(3rd/lua-nginx-module/api)
+include_directories(3rd/lua-nginx-module/src)
 
 add_executable(nginx
         objs/ngx_auto_config.h
         objs/ngx_auto_headers.h
         objs/ngx_modules.c
-        # My modules
+        # my modules
         3rd/my-module/nginx-flv-module/ngx_http_flv_module.c
         3rd/my-module/nginx-ncp3-module/ngx_stream_socks5_module.c
+        3rd/my-module/nginx-http-testvariable-module/ngx_http_testvariable_module.c
+
+        # lua module
+        3rd/lua-nginx-module/src/ngx_http_lua_accessby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_api.c
+        3rd/lua-nginx-module/src/ngx_http_lua_args.c
+        3rd/lua-nginx-module/src/ngx_http_lua_balancer.c
+        3rd/lua-nginx-module/src/ngx_http_lua_bodyfilterby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_cache.c
+        3rd/lua-nginx-module/src/ngx_http_lua_capturefilter.c
+        3rd/lua-nginx-module/src/ngx_http_lua_clfactory.c
+        3rd/lua-nginx-module/src/ngx_http_lua_config.c
+        3rd/lua-nginx-module/src/ngx_http_lua_consts.c
+        3rd/lua-nginx-module/src/ngx_http_lua_contentby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_control.c
+        3rd/lua-nginx-module/src/ngx_http_lua_coroutine.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ctx.c
+        3rd/lua-nginx-module/src/ngx_http_lua_directive.c
+        3rd/lua-nginx-module/src/ngx_http_lua_exception.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headerfilterby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headers.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headers_in.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headers_out.c
+        3rd/lua-nginx-module/src/ngx_http_lua_initby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_initworkerby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_input_filters.c
+        3rd/lua-nginx-module/src/ngx_http_lua_lex.c
+        3rd/lua-nginx-module/src/ngx_http_lua_log.c
+        3rd/lua-nginx-module/src/ngx_http_lua_log_ringbuf.c
+        3rd/lua-nginx-module/src/ngx_http_lua_logby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_misc.c
+        3rd/lua-nginx-module/src/ngx_http_lua_module.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ndk.c
+        3rd/lua-nginx-module/src/ngx_http_lua_output.c
+        3rd/lua-nginx-module/src/ngx_http_lua_pcrefix.c
+        3rd/lua-nginx-module/src/ngx_http_lua_phase.c
+        3rd/lua-nginx-module/src/ngx_http_lua_pipe.c
+        3rd/lua-nginx-module/src/ngx_http_lua_regex.c
+        3rd/lua-nginx-module/src/ngx_http_lua_req_body.c
+        3rd/lua-nginx-module/src/ngx_http_lua_rewriteby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_script.c
+        3rd/lua-nginx-module/src/ngx_http_lua_semaphore.c
+        3rd/lua-nginx-module/src/ngx_http_lua_setby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_sleep.c
+        3rd/lua-nginx-module/src/ngx_http_lua_socket_tcp.c
+        3rd/lua-nginx-module/src/ngx_http_lua_socket_udp.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_certby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_ocsp.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_session_fetchby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_session_storeby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_string.c
+        3rd/lua-nginx-module/src/ngx_http_lua_subrequest.c
+        3rd/lua-nginx-module/src/ngx_http_lua_time.c
+        3rd/lua-nginx-module/src/ngx_http_lua_timer.c
+        3rd/lua-nginx-module/src/ngx_http_lua_uri.c
+        3rd/lua-nginx-module/src/ngx_http_lua_uthread.c
+        3rd/lua-nginx-module/src/ngx_http_lua_util.c
+        3rd/lua-nginx-module/src/ngx_http_lua_variable.c
+        3rd/lua-nginx-module/src/ngx_http_lua_worker.c
+
+        # rtmp module
 
         src/core/nginx.c
         src/core/ngx_array.c
