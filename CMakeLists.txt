@@ -19,6 +19,9 @@ include_directories(/usr/local/opt/openssl/include)
 # lua module
 include_directories(3rd/lua-nginx-module/api)
 include_directories(3rd/lua-nginx-module/src)
+# njs
+include_directories(3rd/njs/src)
+include_directories(3rd/njs/build)
 
 add_executable(nginx
         objs/ngx_auto_config.h
@@ -89,6 +92,65 @@ add_executable(nginx
         3rd/lua-nginx-module/src/ngx_http_lua_worker.c
 
         # rtmp module
+
+        # njs
+        3rd/njs/nginx/ngx_http_js_module.c
+        3rd/njs/nginx/ngx_stream_js_module.c
+        3rd/njs/src/njs_arr.c
+        3rd/njs/src/njs_array.c
+        3rd/njs/src/njs_array_buffer.c
+        3rd/njs/src/njs_boolean.c
+        3rd/njs/src/njs_chb.c
+        3rd/njs/src/njs_crypto.c
+        3rd/njs/src/njs_date.c
+        3rd/njs/src/njs_disassembler.c
+        3rd/njs/src/njs_djb_hash.c
+        3rd/njs/src/njs_dtoa.c
+        3rd/njs/src/njs_dtoa_fixed.c
+        3rd/njs/src/njs_error.c
+        3rd/njs/src/njs_event.c
+        3rd/njs/src/njs_extern.c
+        3rd/njs/src/njs_file.c
+        3rd/njs/src/njs_fs.c
+        3rd/njs/src/njs_function.c
+        3rd/njs/src/njs_generator.c
+        3rd/njs/src/njs_json.c
+        3rd/njs/src/njs_lexer.c
+        3rd/njs/src/njs_lexer_keyword.c
+        3rd/njs/src/njs_lvlhsh.c
+        3rd/njs/src/njs_malloc.c
+        3rd/njs/src/njs_math.c
+        3rd/njs/src/njs_md5.c
+        3rd/njs/src/njs_module.c
+        3rd/njs/src/njs_mp.c
+        3rd/njs/src/njs_murmur_hash.c
+        3rd/njs/src/njs_number.c
+        3rd/njs/src/njs_object.c
+        3rd/njs/src/njs_object_prop.c
+        3rd/njs/src/njs_parser.c
+        3rd/njs/src/njs_parser_expression.c
+        3rd/njs/src/njs_parser_terminal.c
+        3rd/njs/src/njs_pcre.c
+        3rd/njs/src/njs_promise.c
+        3rd/njs/src/njs_queue.c
+        3rd/njs/src/njs_random.c
+        3rd/njs/src/njs_rbtree.c
+        3rd/njs/src/njs_regexp.c
+        3rd/njs/src/njs_sha1.c
+        3rd/njs/src/njs_sha2.c
+        3rd/njs/src/njs_shell.c
+        3rd/njs/src/njs_sprintf.c
+        3rd/njs/src/njs_string.c
+        3rd/njs/src/njs_strtod.c
+        3rd/njs/src/njs_symbol.c
+        3rd/njs/src/njs_time.c
+        3rd/njs/src/njs_trace.c
+        3rd/njs/src/njs_typed_array.c
+        3rd/njs/src/njs_utf8.c
+        3rd/njs/src/njs_value.c
+        3rd/njs/src/njs_variable.c
+        3rd/njs/src/njs_vm.c
+        3rd/njs/src/njs_vmcode.c
 
         src/core/nginx.c
         src/core/ngx_array.c
