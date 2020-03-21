@@ -215,6 +215,11 @@ static ngx_command_t  ngx_http_core_commands[] = {
       NULL },
 
     { ngx_string("connection_pool_size"),
+      /*
+
+       * NOTE: 存储在 ngx_http_core_srv_conf_t 中的配置项就可以在 http_main 和 server 中出现
+       *       而存储在 Ngx_http_core_main_conf_t 中的配置项只能在 http_main 中出现
+       */
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_SRV_CONF_OFFSET,
@@ -2730,6 +2735,9 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     }
 
     http_ctx = cf->ctx;
+    /*
+     * NOTE: 注意这一句
+     */
     ctx->main_conf = http_ctx->main_conf;
 
     /* the server{}'s srv_conf */
@@ -2871,6 +2879,13 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     }
 
     pctx = cf->ctx;
+    /*
+     * NOTE: 注意下面这两句
+     *       在 ngx_http_core_server 中，有 ctx->main_conf = pctx->main_conf
+     *       所以 loc/srv/main 共用一个 ctx->main_conf
+     *       而 loc/srv 共用一个 ctx->srv_conf
+     *       这样有啥用呢？
+     */
     ctx->main_conf = pctx->main_conf;
     ctx->srv_conf = pctx->srv_conf;
 

@@ -97,6 +97,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     sigaddset(&set, ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
     sigaddset(&set, ngx_signal_value(NGX_CHANGEBIN_SIGNAL));
 
+    // NOTE: 在进入循环之前，先阻塞这些信号
     if (sigprocmask(SIG_BLOCK, &set, NULL) == -1) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                       "sigprocmask() failed");
@@ -129,6 +130,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
+    // QUESTION: 为什么这里用 PROCESS_RESPAWN？
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
     // TODO: cache manager/loader 这一块我还不熟悉，需要注意
@@ -139,6 +141,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     sigio = 0;
     live = 1;
 
+    // NOTE: 信号处理程序为 src/os/unix/ngx_process.c 的 ngx_signal_handler
     for ( ;; ) {
         if (delay) {
             if (ngx_sigalrm) {
@@ -163,6 +166,10 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "sigsuspend");
 
+        /*
+         * NOTE: sigsuspend 将阻塞的信号集替换为 set，然后开始等待信号到来，函数返回时会
+         *       将阻塞信号集恢复到 sigsuspend 之前的信号集
+         */
         sigsuspend(&set);
 
         ngx_time_update();
@@ -170,6 +177,13 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                        "wake up, sigio %i", sigio);
 
+        /*
+         * NOTE: 对于 master 进程来说，只有收到 SIGCHLD 信号，才会有 ngx_reap == 1
+         *       此时表示需要监控所有的子进程，即调用 ngx_reap_children 来对子进程进行管理
+         *       这个函数主要是遍历 ngx_processes 数组，检查每个子进程的状态，对于非正常
+         *       退出的子进程都重新拉起
+         *       如果所有子进程都正常退出，那么 live == 0，否则为 1
+         */
         if (ngx_reap) {
             ngx_reap = 0;
             ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "reap children");
@@ -181,7 +195,11 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_master_process_exit(cycle);
         }
 
+        /*
+         * NOTE: 收到 TERM 信号，优雅终止
+         */
         if (ngx_terminate) {
+            // QUESTION: delay 是用来干什么的？
             if (delay == 0) {
                 delay = 50;
             }
@@ -193,6 +211,9 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
             sigio = ccf->worker_processes + 2 /* cache processes */;
 
+            /*
+             * NOTE:
+             */
             if (delay > 1000) {
                 ngx_signal_worker_processes(cycle, SIGKILL);
             } else {
@@ -204,9 +225,11 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_quit) {
+            // NOTE: 收到 QUIT 信号，直接停止子进程
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
 
+            // QUESTION: 下面就是简单地做个检查？不 close？
             ls = cycle->listening.elts;
             for (n = 0; n < cycle->listening.nelts; n++) {
                 if (ngx_close_socket(ls[n].fd) == -1) {
@@ -220,9 +243,17 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             continue;
         }
 
+        /*
+         * NOTE: reconfigure 和 new_binary 的关系？
+         *       只要 new_binary，肯定要 reconfigure，反之则不是，所以 new_binary 是 reconfigure 的进一步
+         */
         if (ngx_reconfigure) {
             ngx_reconfigure = 0;
 
+            /*
+             * QUESTION: new_binary 只需要再次拉取 worker/cacher 就可以了？
+             *           master 不用重新拉取么？
+             */
             if (ngx_new_binary) {
                 ngx_start_worker_processes(cycle, ccf->worker_processes,
                                            NGX_PROCESS_RESPAWN);
@@ -234,6 +265,11 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
 
+            /*
+             * NOTE: 这里又重新载入了配置
+             *       但是有个问题就是，如果是 new_binary，也是应该重载配置的吧？
+             *       为什么不把 ngx_init_cycle 放在前面的 ngx_new_binary 之前呢？
+             */
             cycle = ngx_init_cycle(cycle);
             if (cycle == NULL) {
                 cycle = (ngx_cycle_t *) ngx_cycle;
@@ -243,6 +279,10 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_cycle = cycle;
             ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
                                                    ngx_core_module);
+            /*
+             * QUESTION: 这里用的是 JUST_RESPAWN，new_binary 时用的是 RESPAWN，
+             *           二者有什么区别么？
+             */
             ngx_start_worker_processes(cycle, ccf->worker_processes,
                                        NGX_PROCESS_JUST_RESPAWN);
             ngx_start_cache_manager_processes(cycle, 1);
@@ -251,6 +291,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_msleep(100);
 
             live = 1;
+            // NOTE: 前面起了新的 worker，这里关闭原来的 worker
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
         }
@@ -267,6 +308,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_reopen = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
             ngx_reopen_files(cycle, ccf->user);
+            // NOTE: 发信号给 worker
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_REOPEN_SIGNAL));
         }
@@ -344,6 +386,7 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
 }
 
 
+// QUESTION: 这些 type 有什么不同？
 static void
 ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
 {
@@ -508,6 +551,7 @@ ngx_signal_worker_processes(ngx_cycle_t *cycle, int signo)
             continue;
         }
 
+        // QUESTION: just_spawn 是何时设置的？为什么要在这里置为 0？
         if (ngx_processes[i].just_spawn) {
             ngx_processes[i].just_spawn = 0;
             continue;
@@ -566,6 +610,7 @@ ngx_reap_children(ngx_cycle_t *cycle)
 
     ngx_memzero(&ch, sizeof(ngx_channel_t));
 
+    // NOTE: 这次发送的命令是关闭命令
     ch.command = NGX_CMD_CLOSE_CHANNEL;
     ch.fd = -1;
 
@@ -586,8 +631,12 @@ ngx_reap_children(ngx_cycle_t *cycle)
             continue;
         }
 
+        /*
+         * QUESTION: 如果某个进程已经退出，那么检查它的情况
+         */
         if (ngx_processes[i].exited) {
 
+            // NOTE: detached 的进程就不会和 master 通信，就不用处理 channel
             if (!ngx_processes[i].detached) {
                 ngx_close_channel(ngx_processes[i].channel, cycle->log);
 
@@ -597,6 +646,9 @@ ngx_reap_children(ngx_cycle_t *cycle)
                 ch.pid = ngx_processes[i].pid;
                 ch.slot = i;
 
+                /*
+                 * NOTE: 下面这个 for 循环在干啥？
+                 */
                 for (n = 0; n < ngx_last_process; n++) {
                     if (ngx_processes[n].exited
                         || ngx_processes[n].pid == -1
@@ -740,6 +792,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
     for ( ;; ) {
 
+        // NOTE: ngx_exiting 和 ngx_quit/ngx_terminate 的区别是什么？
         if (ngx_exiting) {
             if (ngx_event_no_timers_left() == NGX_OK) {
                 ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
@@ -749,6 +802,11 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
 
+        /*
+         * NOTE: 处理事件循环
+         *
+         * QUESTION: 为什么这个函数放在这个位置？
+         */
         ngx_process_events_and_timers(cycle);
 
         if (ngx_terminate) {
@@ -758,10 +816,15 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
         if (ngx_quit) {
             ngx_quit = 0;
+            // NOTE: 注意 quit 是【优雅】关闭，而 term 是直接关闭
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                           "gracefully shutting down");
+            // QUESTION: 还有这个？
             ngx_setproctitle("worker process is shutting down");
 
+            /*
+             * NOTE: 这个 ngx_exiting 标志
+             */
             if (!ngx_exiting) {
                 ngx_exiting = 1;
                 ngx_set_shutdown_timer(cycle);
@@ -799,6 +862,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
     if (worker >= 0 && ccf->priority != 0) {
+        // QUESTION: 这是在干啥？
         if (setpriority(PRIO_PROCESS, 0, ccf->priority) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "setpriority(%d) failed", ccf->priority);
@@ -827,6 +891,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
         }
     }
 
+    // TODO: 下面的调用不懂。
     if (geteuid() == 0) {
         if (setgid(ccf->group) == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
@@ -900,6 +965,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
 
 #endif
 
+    // QUESTION: working_directory 和 -p 指定的目录有什么不同？
     if (ccf->working_directory.len) {
         if (chdir((char *) ccf->working_directory.data) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
@@ -925,9 +991,11 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
      */
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
+        // QUESTION: previous 这个是干啥用的？
         ls[i].previous = NULL;
     }
 
+    // NOTE: 注意 init_process 是进入 woker(或者在单进程的情况下进入 single_process)的时候调用
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->init_process) {
             if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
@@ -943,10 +1011,12 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             continue;
         }
 
+        // NOTE: 就是 worker 自己
         if (n == ngx_process_slot) {
             continue;
         }
 
+        // QUESTION: 为啥在 ngx_process[n].pid != -1 的情况下却有这种可能呢？
         if (ngx_processes[n].channel[1] == -1) {
             continue;
         }
@@ -957,6 +1027,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
         }
     }
 
+    // NOTE: 关闭自己的写口
     if (close(ngx_processes[ngx_process_slot].channel[0]) == -1) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                       "close() channel failed");
@@ -966,6 +1037,7 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     ngx_last_process = 0;
 #endif
 
+    // NOTE: 把读口加入到 epoll，这样就可以在处理请求的同事接收到 channel 中发来的消息
     if (ngx_add_channel_event(cycle, ngx_channel, NGX_READ_EVENT,
                               ngx_channel_handler)
         == NGX_ERROR)
@@ -1069,6 +1141,7 @@ ngx_channel_handler(ngx_event_t *ev)
             return;
         }
 
+        // QUESTION: 这个是啥？
         if (ngx_event_flags & NGX_USE_EVENTPORT_EVENT) {
             if (ngx_add_event(ev, NGX_READ_EVENT, 0) == NGX_ERROR) {
                 return;

@@ -35,6 +35,12 @@ static ngx_connection_t  dumb;
 /* STUB */
 
 
+/*
+ * QUESTION: 这个 old_cycle 是干啥用的？为什么需要这样一个参数？
+ *
+ * NOTE: 这个函数不仅仅在初始化的时候用，还在 reconfiguration 时被调用，所以有一个
+ *       old_cycle 参数是符合预期的
+ */
 ngx_cycle_t *
 ngx_init_cycle(ngx_cycle_t *old_cycle)
 {
@@ -97,6 +103,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
     cycle->conf_file.len = old_cycle->conf_file.len;
+    // QUESTION: 为什么这里不用 ngx_pstrdup？还有就是为什么+1？ 最后的 0 字符？
     cycle->conf_file.data = ngx_pnalloc(pool, old_cycle->conf_file.len + 1);
     if (cycle->conf_file.data == NULL) {
         ngx_destroy_pool(pool);
@@ -113,6 +120,9 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
 
+    /*
+     * QUESTION: paths 是啥？
+     */
     n = old_cycle->paths.nelts ? old_cycle->paths.nelts : 10;
 
     if (ngx_array_init(&cycle->paths, pool, n, sizeof(ngx_path_t *))
@@ -135,6 +145,9 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     ngx_rbtree_init(&cycle->config_dump_rbtree, &cycle->config_dump_sentinel,
                     ngx_str_rbtree_insert_value);
 
+    /*
+     * QUESTION: 为什么 open_files 要用 list 结构而不用 array 结构呢？
+     */
     if (old_cycle->open_files.part.nelts) {
         n = old_cycle->open_files.part.nelts;
         for (part = old_cycle->open_files.part.next; part; part = part->next) {
@@ -171,7 +184,6 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         return NULL;
     }
 
-    // QUESTION: 这里不太懂，继承监听描述符具体是怎么做的？
     n = old_cycle->listening.nelts ? old_cycle->listening.nelts : 10;
 
     if (ngx_array_init(&cycle->listening, pool, n, sizeof(ngx_listening_t))
@@ -194,6 +206,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
 
+    // NOTE: 获取当前主机的名字
     if (gethostname(hostname, NGX_MAXHOSTNAMELEN) == -1) {
         ngx_log_error(NGX_LOG_EMERG, log, ngx_errno, "gethostname() failed");
         ngx_destroy_pool(pool);
@@ -214,6 +227,10 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     ngx_strlow(cycle->hostname.data, (u_char *) hostname, cycle->hostname.len);
 
 
+    /*
+     * NOTE: 把全局的 ngx_modules 拷贝到 cycle->modules 中去，但是为什么要这样做呢？
+     *       难道 maser-worker 看到的模块会有不同么？
+     */
     if (ngx_cycle_modules(cycle) != NGX_OK) {
         ngx_destroy_pool(pool);
         return NULL;
@@ -258,7 +275,9 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
 
-    // NOTE: conf_ctx 用来存储配置项结构体的
+    /*
+     * NOTE：注意 conf.ctx 设置的是 cycle->conf_ctx 四级指针
+     */
     conf.ctx = cycle->conf_ctx;
     conf.cycle = cycle;
     conf.pool = pool;
@@ -270,6 +289,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     log->log_level = NGX_LOG_DEBUG_ALL;
 #endif
 
+    // NOTE: 解析从命令行传入的配置项
     if (ngx_conf_param(&conf) != NGX_CONF_OK) {
         environ = senv;
         ngx_destroy_cycle_pools(&conf);
@@ -277,6 +297,8 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
     if (ngx_conf_parse(&conf, &cycle->conf_file) != NGX_CONF_OK) {
+        // QUESTION: 没有搞懂为什么 environ 和 senv 要轮流换着用？
+        //           senv，应该是 saved env？难道 ngx_conf_parse 会对 environ 做什么改变么？
         environ = senv;
         ngx_destroy_cycle_pools(&conf);
         return NULL;
@@ -306,6 +328,8 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         }
     }
 
+    // NOTE: 如果是 nginx -s xxx 这种形式，到这里就结束了。
+    // QUESTION: 为啥？我感觉都不用这么麻烦，前面为啥要做这么一大堆东西，直接包装 kill 不就可以了？
     if (ngx_process == NGX_PROCESS_SIGNALLER) {
         return cycle;
     }
@@ -609,6 +633,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         }
     }
 
+    // NOTE: 所以监听操作是在进入 master 循环之前就完成了，然后各个 worker 继承，而不是每个 worker 来进行监听操作。
     if (ngx_open_listening_sockets(cycle) != NGX_OK) {
         goto failed;
     }

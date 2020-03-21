@@ -10,6 +10,9 @@
 #include <ngx_channel.h>
 
 
+/*
+ * ATTENTION: 这个是在不同进程之间传递文件描述符的方法！
+ */
 ngx_int_t
 ngx_write_channel(ngx_socket_t s, ngx_channel_t *ch, size_t size,
     ngx_log_t *log)

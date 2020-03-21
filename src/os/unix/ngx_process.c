@@ -83,6 +83,7 @@ ngx_signal_t  signals[] = {
 };
 
 
+// QUESTION: 第三个参数设置为 void* 是有什么特殊用法么？
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
@@ -95,6 +96,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         s = respawn;
 
     } else {
+        // QUESTION: 这个 for 循环是在干啥？
         for (s = 0; s < ngx_last_process; s++) {
             if (ngx_processes[s].pid == -1) {
                 break;
@@ -143,6 +145,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         }
 
         on = 1;
+        // NOTE: 0 是读，1 是写
         if (ioctl(ngx_processes[s].channel[0], FIOASYNC, &on) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "ioctl(FIOASYNC) failed while spawning \"%s\"", name);
@@ -150,6 +153,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
             return NGX_INVALID_PID;
         }
 
+        // QUESTION: 为什么一定要设置 F_SETOWN 为 ngx_pid，而且 ngx_pid 此时是 master 的 pid 吧？
         if (fcntl(ngx_processes[s].channel[0], F_SETOWN, ngx_pid) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "fcntl(F_SETOWN) failed while spawning \"%s\"", name);
@@ -176,6 +180,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         ngx_channel = ngx_processes[s].channel[1];
 
     } else {
+        // QUESTION: NGX_PROCESSS_DETATCHED 就表示不和 master 通信？
         ngx_processes[s].channel[0] = -1;
         ngx_processes[s].channel[1] = -1;
     }
@@ -194,12 +199,14 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         return NGX_INVALID_PID;
 
     case 0:
+        // NOTE: 子进程
         ngx_parent = ngx_pid;
         ngx_pid = ngx_getpid();
         proc(cycle, data);
         break;
 
     default:
+        // NOTE: 父进程
         break;
     }
 
@@ -208,6 +215,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     ngx_processes[s].pid = pid;
     ngx_processes[s].exited = 0;
 
+    // QUESTION: respawn 到底表示什么？< 0的话有 NORESPAWN, JUST_RESPAWN, RESPAWN...，大于 0 呢？表示什么？
     if (respawn >= 0) {
         return pid;
     }
@@ -225,6 +233,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         ngx_processes[s].detached = 0;
         break;
 
+        // QUESTION: JUST_SPAWN, RESPAWN, JUST_RESPAWN 有什么区别？
     case NGX_PROCESS_JUST_SPAWN:
         ngx_processes[s].respawn = 0;
         ngx_processes[s].just_spawn = 1;
@@ -250,6 +259,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
         break;
     }
 
+    // QUESTION: ngx_last_process 表示什么？
     if (s == ngx_last_process) {
         ngx_last_process++;
     }
@@ -355,6 +365,8 @@ ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext)
             break;
 
         case ngx_signal_value(NGX_NOACCEPT_SIGNAL):
+            // QUESTION: 如果不是守护进程呢？就不 stop accept conn 了么？ Why?
+            //           阅读 commit message
             if (ngx_daemonized) {
                 ngx_noaccept = 1;
                 action = ", stop accepting connections";
@@ -398,6 +410,7 @@ ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext)
             ngx_sigio = 1;
             break;
 
+            // NOTE: 子进程退出
         case SIGCHLD:
             ngx_reap = 1;
             break;

@@ -951,11 +951,18 @@ static char *
 ngx_events_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     char                 *rv;
+    // QUESTION: 为什么 ctx 要是一个三级指针？
     void               ***ctx;
     ngx_uint_t            i;
     ngx_conf_t            pcf;
     ngx_event_module_t   *m;
 
+    /*
+     * NOTE: 对于 MAIN_CONF，而且没有带 DIRECT_CONF 的，conf 参数是 conf_ctx 中该
+     *       模块对应位置的指针，意思就是让模块自己分配内存，然后使用该指针存到该位置去
+     *        所以 conf 是一个本模块的在 cycle->conf_ctx 数组中对应位置的指针
+     *        如果该位置上已经有数据了，说明 events{} 出现了两次，这是非法的
+     */
     if (*(void **) conf) {
         return "is duplicate";
     }
@@ -964,6 +971,19 @@ ngx_events_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_event_max_module = ngx_count_modules(cf->cycle, NGX_EVENT_MODULE);
 
+    /*
+     * QUESTION: 下面分别为 ctx 和 *ctx 分配了内存，这是为什么呢？
+     *
+     * NOTE: 我一开始想的是这样：
+     *       ctx = ngx_palloc(cf->pool, ngx_event_max_module * sizeof(void *));
+     *       *(void **) conf = ctx
+     *       然后取用的时候就是：
+     *       #define ngx_event_get_conf(conf_ctx, module)   \
+     *          (ngx_get_conf(conf_ctx, ngx_event_module))[module.ctx_index]
+     *       但是现在这种方法，就是这样取用：
+     *       #define ngx_event_get_conf(conf_ctx, module)   \
+     *          (*(ngx_get_conf(conf_ctx, ngx_event_module)))[module.ctx_index]
+     */
     ctx = ngx_pcalloc(cf->pool, sizeof(void *));
     if (ctx == NULL) {
         return NGX_CONF_ERROR;
@@ -992,6 +1012,7 @@ ngx_events_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    // NOTE: 这里和下面的 *cf = pcf; 是一对操作
     pcf = *cf;
     cf->ctx = ctx;
     cf->module_type = NGX_EVENT_MODULE;
@@ -1080,12 +1101,21 @@ ngx_event_use(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /*
+         * NOTE: NGX_EVENT_MODULE 类型的模块都有一个 name 字段，这个就是和 use epoll;
+         *       指令相呼应的
+         */
         module = cf->cycle->modules[m]->ctx;
         if (module->name->len == value[1].len) {
             if (ngx_strcmp(module->name->data, value[1].data) == 0) {
                 ecf->use = cf->cycle->modules[m]->ctx_index;
                 ecf->name = module->name->data;
 
+                /*
+                 * QUESTION: 当 nginx 不是在 master-worker 形式下运行，不允许以
+                 *           on-the-fly 的形式来更换事件驱动机制。
+                 *           这是为什么呢？
+                 */
                 if (ngx_process == NGX_PROCESS_SINGLE
                     && old_ecf
                     && old_ecf->use != ecf->use)

@@ -19,6 +19,7 @@ include_directories(/usr/local/opt/openssl/include)
 # lua module
 include_directories(3rd/lua-nginx-module/api)
 include_directories(3rd/lua-nginx-module/src)
+include_directories(/usr/local/opt/openresty/luajit/include/luajit-2.1)
 # njs
 include_directories(3rd/njs/src)
 include_directories(3rd/njs/build)
@@ -152,6 +153,7 @@ add_executable(nginx
         3rd/njs/src/njs_vm.c
         3rd/njs/src/njs_vmcode.c
 
+        # nginx core
         src/core/nginx.c
         src/core/ngx_array.c
         src/core/ngx_buf.c
@@ -189,6 +191,7 @@ add_executable(nginx
         src/core/ngx_syslog.c
         src/core/ngx_thread_pool.c
         src/core/ngx_times.c
+        # nginx event
         src/event/modules/ngx_devpoll_module.c
         src/event/modules/ngx_epoll_module.c
         src/event/modules/ngx_eventport_module.c
@@ -209,11 +212,8 @@ add_executable(nginx
         src/event/ngx_event_posted.c
         src/event/ngx_event_timer.c
         src/event/ngx_event_udp.c
-        src/http/modules/perl/Makefile.PL
-        src/http/modules/perl/nginx.pm
-        src/http/modules/perl/nginx.xs
+        # nginx http
         src/http/modules/perl/ngx_http_perl_module.c
-        src/http/modules/perl/typemap
         src/http/modules/ngx_http_access_module.c
         src/http/modules/ngx_http_addition_filter_module.c
         src/http/modules/ngx_http_auth_basic_module.c
@@ -291,6 +291,7 @@ add_executable(nginx
         src/http/ngx_http_upstream_round_robin.c
         src/http/ngx_http_variables.c
         src/http/ngx_http_write_filter_module.c
+        # nginx mail
         src/mail/ngx_mail.c
         src/mail/ngx_mail_auth_http_module.c
         src/mail/ngx_mail_core_module.c
@@ -304,6 +305,7 @@ add_executable(nginx
         src/mail/ngx_mail_smtp_handler.c
         src/mail/ngx_mail_smtp_module.c
         src/mail/ngx_mail_ssl_module.c
+        # nginx os-related
         src/os/unix/ngx_alloc.c
         src/os/unix/ngx_channel.c
         src/os/unix/ngx_daemon.c
@@ -342,6 +344,7 @@ add_executable(nginx
         src/os/unix/ngx_udp_sendmsg_chain.c
         src/os/unix/ngx_user.c
         src/os/unix/ngx_writev_chain.c
+        # nginx stream
         src/stream/ngx_stream.c
         src/stream/ngx_stream_access_module.c
         src/stream/ngx_stream_core_module.c

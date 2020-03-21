@@ -40,6 +40,14 @@ struct ngx_cycle_s {
     void                  ****conf_ctx;
     ngx_pool_t               *pool;
 
+    /*
+     * NOTE: 注意这俩 ngx_log_t
+     *       1. 在还没有执行 ngx_init_cycle 之前，也就是还没有解析配置之前，如果有信息需要
+     *       输出到日志，就会暂且使用 log，它负责输出到终端
+     *       2. 在 ngx_init_cycle 方法执行之后，在 nginx.conf 配置文件中读取到了日志文件的路径，
+     *       将开始初始化 error_log 日志文件，由于 log 对象还在用于将日志输出到终端，此时会用
+     *       new_log 对象暂时地代替 log 日志，待初始化成功之后，会用 new_log 的地址覆盖 log
+     */
     ngx_log_t                *log;
     ngx_log_t                 new_log;
 
@@ -63,9 +71,11 @@ struct ngx_cycle_s {
     ngx_rbtree_t              config_dump_rbtree;
     ngx_rbtree_node_t         config_dump_sentinel;
 
+    // NOTE: nginx 框架不会往里面添加文件名，而是由对此感兴趣的模块向其中添加。Nginx 框架负责在 ngx_init_cycle 中打开
     ngx_list_t                open_files;
     ngx_list_t                shared_memory;
 
+    // NOTE: 这个是通过 worker_connections 配置项来指定的
     ngx_uint_t                connection_n;
     ngx_uint_t                files_n;
 

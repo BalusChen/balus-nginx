@@ -298,7 +298,10 @@ main(int argc, char *const *argv)
         return 1;
     }
 
-    // NOTE: ngx_init_cycle 函数里面就把所有配置项给解析出来了，所以这之后都可以用了
+    /*
+     * NOTE: ngx_init_cycle 函数里面就把所有配置项给解析出来了，所以这之后都可以用了
+     * QUESTION: 但是为什么要重新使用 cycle，而不是继续使用 init_cycle 呢？
+     */
     cycle = ngx_init_cycle(&init_cycle);
     if (cycle == NULL) {
         if (ngx_test_config) {
@@ -336,7 +339,10 @@ main(int argc, char *const *argv)
         return 0;
     }
 
-    // NOTE: ngx_signal 也是在 ngx_get_options 里面设置的。用于 nginx -s reload 这种形式
+    /*
+     * NOTE: ngx_signal 也是在 ngx_get_options 里面设置的。用于 nginx -s reload 这种形式
+     * QUESTION: 但是为什么要到这么晚才调用 ngx_signal_process 呢？解析完命令行参数之后不就可以了么？
+     */
     if (ngx_signal) {
         return ngx_signal_process(cycle, ngx_signal);
     }
@@ -346,7 +352,7 @@ main(int argc, char *const *argv)
     // QUESTION: ngx_cycle 是干啥用的？
     ngx_cycle = cycle;
 
-    // QUESTION: 这个时候 nginx.conf 已经解析了么？
+    // NOTE: 上面 ngx_init_cycle 里面已经解析了配置文件了
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
     // NOTE: master 是指 master_process 这个配置项，用于决定是否启动 worker 进程，一般是 Nginx Developer 使用

@@ -491,6 +491,11 @@ extern ngx_module_t           ngx_events_module;
 extern ngx_module_t           ngx_event_core_module;
 
 
+/*
+ * NOTE: 通过这个宏，我好像理解了一点为什么 cycle->conf_ctx 是一个四级指针。
+ *       我开始看居然是一个四级指针，很神奇；但是后面看着感觉其实只要一个二级指针就 ok 了，
+ *       毕竟是一个数组，然后每个模块的配置项指针都占一个槽，二级其实就够了
+ */
 #define ngx_event_get_conf(conf_ctx, module)                                  \
              (*(ngx_get_conf(conf_ctx, ngx_events_module))) [module.ctx_index]
 

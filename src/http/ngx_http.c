@@ -123,6 +123,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t                   mi, m, s;
     ngx_conf_t                   pcf;
     ngx_http_module_t           *module;
+    // QUESTION: event 模块的 ctx 是一个三级指针，为什么这里就一个普通一级指针就 ok 了？
     ngx_http_conf_ctx_t         *ctx;
     ngx_http_core_loc_conf_t    *clcf;
     ngx_http_core_srv_conf_t   **cscfp;

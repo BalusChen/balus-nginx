@@ -186,6 +186,9 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
             return NGX_CONF_ERROR;
         }
 
+        /*
+         * QUESTION: 下面这是干啥？
+         */
         prev = cf->conf_file;
 
         cf->conf_file = &conf_file;
@@ -202,6 +205,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
             goto failed;
         }
 
+        // NOTE: 注意 pos, start, last 和 end 的设置
         buf.pos = buf.start;
         buf.last = buf.start;
         buf.end = buf.last + NGX_CONF_BUFFER;
@@ -231,6 +235,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
         }
 
     } else if (cf->conf_file->file.fd != NGX_INVALID_FILE) {
+        // NOTE: conf_file.fd 是有效的，说明前面已经打开过配置文件了
 
         type = parse_block;
 
@@ -256,6 +261,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
             goto done;
         }
 
+        // NOTE: 读取到了 '}'
         if (rc == NGX_CONF_BLOCK_DONE) {
 
             if (type != parse_block) {
@@ -279,6 +285,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 
         if (rc == NGX_CONF_BLOCK_START) {
 
+            // QUESTION: -g 中带的指令一般是哪些？
             if (type == parse_param) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "block directives are not supported "
@@ -289,6 +296,9 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 
         /* rc == NGX_OK || rc == NGX_CONF_BLOCK_START */
 
+        /*
+         * QUESTION: cf->handler 是何时被设置的？
+         */
         if (cf->handler) {
 
             /*
@@ -372,6 +382,10 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
             continue;
         }
 
+        /*
+         * NOTE: 每个模块的 commands 数组最后一个元素都是 ngx_null_command
+         *       所以通过 cmd->name.len 来作判断就可以了
+         */
         for ( /* void */ ; cmd->name.len; cmd++) {
 
             if (name->len != cmd->name.len) {
@@ -384,6 +398,11 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
 
             found = 1;
 
+            /*
+             * QUESTION: 为什么不先判断 module_type，然后再比对 name?
+             *
+             * QUESTION: 为什么 NGX_CONF_MODULE 不参与 type 比对？
+             */
             if (cf->cycle->modules[i]->type != NGX_CONF_MODULE
                 && cf->cycle->modules[i]->type != cf->module_type)
             {
@@ -392,10 +411,16 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
 
             /* is the directive's location right ? */
 
+            /*
+             * NOTE: 这个 type 是用来指明 cmd 的类型(块指令、flag...)、出现的位置、带参数的个数...
+             */
             if (!(cmd->type & cf->cmd_type)) {
                 continue;
             }
 
+            /*
+             * NOTE: 只要不是块指令，那么上一次的返回值就得是 NGX_OK？为啥呢？
+             */
             if (!(cmd->type & NGX_CONF_BLOCK) && last != NGX_OK) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                   "directive \"%s\" is not terminated by \";\"",
@@ -403,6 +428,11 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
                 return NGX_ERROR;
             }
 
+            /*
+             * QUESTION: 不是先解析了 cmd，后面才有 { 么？
+             *           比如 http {...}，先看到 http，然后再看到 {，last 难道不是指
+             *           上一轮解析的返回值么？
+             */
             if ((cmd->type & NGX_CONF_BLOCK) && last != NGX_CONF_BLOCK_START) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "directive \"%s\" has no opening \"{\"",
@@ -416,6 +446,10 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
 
                 if (cmd->type & NGX_CONF_FLAG) {
 
+                    /*
+                     * NOTE: cf->args 里面也包括了指令本身，比如 flv on;
+                     *       这个和命令行的 argv 类似
+                     */
                     if (cf->args->nelts != 2) {
                         goto invalid;
                     }
@@ -444,15 +478,117 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
 
             /* set up the directive's configuration context */
 
+            /*
+             * NOTE: 这一块得好好理解
+             */
             conf = NULL;
 
+            /*
+             * QUESTION: DIRECT_CONF 和 MAIN_CONF 的区别？
+             *           这两者所处的位置时一样的，都是最顶层
+             *           但是不同的是，DIRECT_CONF 的配置项时需要为这个配置项本身来分配
+             *           内存的，比如说 daemon 这个指令；而 http 这个指令，虽然和 daemon
+             *           是出于同一层级，但是并不需要为 http 指令本身分配内存
+             *
+             * QUESTION:
+             */
             if (cmd->type & NGX_DIRECT_CONF) {
                 conf = ((void **) cf->ctx)[cf->cycle->modules[i]->index];
 
             } else if (cmd->type & NGX_MAIN_CONF) {
+                /*
+                 * NOTE: 对于 http 这种顶层的配置项，而又不需要为指令本身分配内存，通常
+                 *       是需要为其下的指令来分配的内存的，此时把该模块在 conf_ctx 中
+                 *       位置的指针传给传给它的 set 回调，由它自己来分配内存，然后把数据
+                 *       存进去。
+                 *
+                 * conf_ctx 里面其实就是一个数组，每个模块占一个槽:
+                 * void ****conf_ctx: |ngx_core_module|...|ngx_http_module|...|
+                 * 比如对于 http 这个指令，它就是 MAIN_CONF(但是没有 DIRECT_CONF)，
+                 * 但是 HTTP 模块的 main/srv/loc_conf 都必须存着，而且具有层级结构，所以
+                 * http 模块自己定义 ngx_http_conf_ctx_t:
+                 * typedef struct {
+                 *     void         **main_conf;
+                 *     void         **srv_conf;
+                 *     void         **loc_conf;
+                 * }
+                 * http 模块的实际存储的内容就是这个结构，这种内存分配操作是由 HTTP 模块
+                 * 自己做的，同样的还有诸如 RTMP 模块这些，所以 Nginx 能做的就是把它们
+                 * 在 conf_ctx 中的槽的【位置】(也就是指针)给 set-callback，让模块自己分配内存，然后
+                 * 把结构体放到给如的位置中。
+                 *
+                 * 然后在 http 指令的 set 回调，也就是 ngx_http_block 函数中：
+                 * static char *
+                 * ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+                 * {
+                 *     ...
+                 *     if (*(ngx_http_conf_ctx_t **) conf) {
+                 *         return "is duplicate";
+                 *     }
+                 *
+                 *     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
+                 *
+                 *     *(ngx_http_conf_ctx_t **) conf = ctx;
+                 *     ...
+                 * }
+                 *
+                 * 1. 首先检查传入的位置是不是已经有数据了，有说明 http 指令出现了两次，不 ok。
+                 * 2. 然后 HTTP 是用 ngx_http_conf_ctx_t 来存储 HTTP 模块的所有层次的
+                 *    配置项的值，所以分配内存，然后放到给定的位置中去
+                 */
                 conf = &(((void **) cf->ctx)[cf->cycle->modules[i]->index]);
 
             } else if (cf->ctx) {
+                /*
+                 * NOTE: 不是 direct_conf，也不是 main_conf，那么
+                 *
+                 * ATTENTION: 感觉配置项的存储太绕了。尤其是像 HTTP 模块，好几层，怎么统一存储呢？
+                 *            可以参考 https://zhuanlan.zhihu.com/p/81731535
+                 *
+                 * 举个例子：
+                 *
+                 * http {
+                 *     server {
+                 *         location ~/.flv {
+                 *         flv;
+                 *         flv_time_offset         off;
+                 *         flv_with_metadata       off;
+                 *         flv_buffer_size         512k;
+                 *         flv_max_buffer_size     2M;
+                 *         }
+                 *     }
+                 * }
+                 *
+                 * 这个 flv 相关的配置存在一个结构体中：
+                 * typedef struct {
+                 *     size_t                buffer_size;
+                 *     size_t                max_buffer_size;
+                 *     ngx_flag_t            time_offset;
+                 *     ngx_flag_t            with_metadata;
+                 * } ngx_http_flv_conf_t;
+                 *
+                 * 比如说 flv_buffer_size 这个配置项，它的 ngx_command_t 定义就是：
+                 * { ngx_string("flv_buffer_size"),
+                 *   NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+                 *   ngx_conf_set_size_slot,
+                 *   NGX_HTTP_LOC_CONF_OFFSET,
+                 *   offsetof(ngx_http_flv_conf_t, buffer_size),
+                 *   NULL },
+                 *
+                 *
+                 * NOTE: 在 parse http{} 内部的配置项，也就是 http 指令的 set 回调 ngx_http_block 方法中
+                 * cf->ctx 会被设置为自己 ngx_http_conf_ctx_t 结构体的指针：
+                 * typedef struct {
+                 *     void        **main_conf;
+                 *     void        **srv_conf;
+                 *     void        **loc_conf;
+                 * } ngx_http_conf_ctx_t;
+                 *
+                 * 此时 confp = &ngx_http_conf_ctx_t + buffer_size->conf
+                 * 对于 flv_buffer_size 这条指令，其 conf 为 NGX_HTTP_LOC_CONF_OFFSET，
+                 * 也就是 offsetof(ngx_http_conf_ctx_t, loc_conf)
+                 */
+                // QUESTION: 这里的 confp 为什么是 void**，它不是对 void** 提领了么？
                 confp = *(void **) ((char *) cf->ctx + cmd->conf);
 
                 if (confp) {
