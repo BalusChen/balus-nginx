@@ -29,6 +29,10 @@ typedef struct {
 } ngx_http_limit_conn_cleanup_t;
 
 
+/*
+ * QUESTION: ngx_rbtree_t 里面不是已经有一个 sentinel 了么？
+ *           为什么这里还要在同级加一个？
+ */
 typedef struct {
     ngx_rbtree_t                  rbtree;
     ngx_rbtree_node_t             sentinel;
@@ -49,6 +53,7 @@ typedef struct {
 
 
 typedef struct {
+    // NOTE: 每个元素都是 ngx_http_limit_conn_ctx_t
     ngx_array_t                   limits;
     ngx_uint_t                    log_level;
     ngx_uint_t                    status_code;
@@ -198,9 +203,21 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
     lccf = ngx_http_get_module_loc_conf(r, ngx_http_limit_conn_module);
     limits = lccf->limits.elts;
 
+    /*
+     * NOTE: 一个 location 下可能有多个 limit_conn（但是不同的 key）
+     *       所以这里选择
+     *
+     * QUESTION: 有一个疑惑，handler 是在 main/srv/loc 哪里发挥作用的？
+     *           由谁来控制呢？
+     */
     for (i = 0; i < lccf->limits.nelts; i++) {
         ctx = limits[i].shm_zone->data;
 
+        /*
+         * NOTE: 前面在解析 `limit_conn_zone key zone=name:size` 配置项时把
+         *       key 给编译成了一个 script code
+         *       现在遇到了一个请求，就把在该请求下的具体的 key 的值给解析出来
+         */
         if (ngx_http_complex_value(r, &ctx->key, &key) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -219,24 +236,57 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
 
         r->main->limit_conn_status = NGX_HTTP_LIMIT_CONN_PASSED;
 
+        /*
+         * NOTE: 假如 limit_conn_zone 配置的 key 是 $binary_addr
+         *       那么每次连接该变量对应的值都是不同的，所以可以根据这个
+         *       变量来判断这个连接出现的频次
+         *
+         * QUESTION: 感觉这个限制的对象是和 key 相关的，加入我把 key 设置为 $uri
+         *           那么这个限制的就是请求了，而不是连接。但是设置为 $binary_addr
+         *           这个是连接维度上的，所以限制的就是连接了
+         */
         hash = ngx_crc32_short(key.data, key.len);
 
         ngx_shmtx_lock(&ctx->shpool->mutex);
 
+        /*
+         * NOTE: 这里 lookup 操作是干嘛？
+         *
+         * QUESTION: 前面 ngx_crc32_short 可以保证不同输入会哈希成不同的输出么？
+         *
+         * NOTE: 不必保证，因为这里的 hash 只是便于比较，因为不同的 hash 值说明 key
+         *       肯定是不同的，如果碰到了相同的 hash 值，那就再用 key 比较就可以了
+         */
         node = ngx_http_limit_conn_lookup(&ctx->sh->rbtree, &key, hash);
 
         if (node == NULL) {
 
+            /*
+             * QUESTION: 下面这句是干啥？
+             *
+             * NOTE: 这句要和下面的 lc = (ngx_http_limit_conn_node_t *) &node->color;
+             *       一起看 ngx_rbtree_note_t 的 color 成员此时放的是一个
+             *       ngx_http_limit_conn_node_t 因为 ngx_http_limit_conn_node_t
+             *       的第一个成员也是 u_char  color; 所以不用担心 color 没了
+             *       然后 ngx_http_limit_conn_node_t 的 data 成员作为最后一个字段
+             *       其实就是一个占位符，相当于柔性数组，在这里用来存储 key
+             */
             n = offsetof(ngx_rbtree_node_t, color)
                 + offsetof(ngx_http_limit_conn_node_t, data)
                 + key.len;
 
+            /*
+             * QUESTION: alloc_locked 是什么意思？
+             */
             node = ngx_slab_alloc_locked(ctx->shpool, n);
 
             if (node == NULL) {
                 ngx_shmtx_unlock(&ctx->shpool->mutex);
                 ngx_http_limit_conn_cleanup_all(r->pool);
 
+                /*
+                 * QUESTION: dry_run 的含义是什么？
+                 */
                 if (lccf->dry_run) {
                     r->main->limit_conn_status =
                                           NGX_HTTP_LIMIT_CONN_REJECTED_DRY_RUN;
@@ -261,6 +311,9 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
 
             lc = (ngx_http_limit_conn_node_t *) &node->color;
 
+            /*
+             * NOTE: 真正的连接限制操作在这里
+             */
             if ((ngx_uint_t) lc->conn >= limits[i].conn) {
 
                 ngx_shmtx_unlock(&ctx->shpool->mutex);
@@ -283,6 +336,9 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
                 return lccf->status_code;
             }
 
+            /*
+             * NOTE: conn 是 u_short 类型，最大为 2^16
+             */
             lc->conn++;
         }
 
@@ -290,6 +346,18 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
                        "limit conn: %08Xi %d", node->key, lc->conn);
 
         ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+        /*
+         * NOTE: 清理函数 ngx_http_limit_conn_cleanup 的作用是将连接数-1，
+         *       并且在减至 0 时将对应的结点从红黑树中删除，并释放共享内存
+         *
+         * QUESTION: 这个函数什么时候被调调用呢？
+         *           注意到这个 cleanup 是分配在 r->pool 这个请求维度的内存池的
+         *           所以请求结束后内存池被释放，cleanup 就会被调用
+         *
+         * TODO: 这里让我对 limit_conn 和 limit_req 越来越分不清了
+         *       看完 limit_conn 马上去看 limit_req
+         */
 
         cln = ngx_pool_cleanup_add(r->pool,
                                    sizeof(ngx_http_limit_conn_cleanup_t));
@@ -433,6 +501,10 @@ ngx_http_limit_conn_cleanup_all(ngx_pool_t *pool)
 }
 
 
+/*
+ * NOTE: init 函数在 ngx_init_cycle 中初始化共享内存时调用
+ *       在 ngx_http_limit_conn_zone 函数中设置了 zone->init 和 zone->data
+ */
 static ngx_int_t
 ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 {
@@ -441,6 +513,10 @@ ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     size_t                      len;
     ngx_http_limit_conn_ctx_t  *ctx;
 
+    /*
+     * NOTE: init zone 的时候需要考虑到 reload/update nginx 的情况，所以会把 old_cycle
+     *       对应的(TODO: 这么个对应法)，一起来 init
+     */
     ctx = shm_zone->data;
 
     if (octx) {
@@ -465,6 +541,7 @@ ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ctx->shpool = (ngx_slab_pool_t *) shm_zone->shm.addr;
 
+    // QUESTION: 这是什么情况？
     if (shm_zone->shm.exists) {
         ctx->sh = ctx->shpool->data;
 
@@ -476,11 +553,13 @@ ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
         return NGX_ERROR;
     }
 
+    // balus: 各种指针让我困惑...
     ctx->shpool->data = ctx->sh;
 
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_http_limit_conn_rbtree_insert_value);
 
+    // QUESTION: 下面的字符串是用来干啥的？
     len = sizeof(" in limit_conn_zone \"\"") + shm_zone->shm.name.len;
 
     ctx->shpool->log_ctx = ngx_slab_alloc(ctx->shpool, len);
@@ -589,12 +668,16 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     size = 0;
     name.len = 0;
 
+    /*
+     * QUESTION: 为什么要用一个 for 循环，不是就最后一个参数是 zone=name:size 的格式么？
+     */
     for (i = 2; i < cf->args->nelts; i++) {
 
         if (ngx_strncmp(value[i].data, "zone=", 5) == 0) {
 
             name.data = value[i].data + 5;
 
+            // NOTE: strstr 函数找到 ":" 在 data 中第一次出现的位置
             p = (u_char *) ngx_strchr(name.data, ':');
 
             if (p == NULL) {
@@ -616,6 +699,7 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 return NGX_CONF_ERROR;
             }
 
+            // NOTE: 最小也得 8*4 = 32KB
             if (size < (ssize_t) (8 * ngx_pagesize)) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "zone \"%V\" is too small", &value[i]);
@@ -637,6 +721,11 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /*
+     * NOTE: 这里为 limit_conn_zone 指令分配共享内存
+     *       如果 shm_zone->data 已经存在，说明已经有一个同名的 limit_conn_zone 了
+     *       而这是不允许的
+     */
     shm_zone = ngx_shared_memory_add(cf, &name, size,
                                      &ngx_http_limit_conn_module);
     if (shm_zone == NULL) {
@@ -659,6 +748,31 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/*
+ * NOTE: 多个 limit_conn 可以共存
+ *
+ * http {
+ *     limit_conn_zone  $binary_remote_addr zone=addr:10m;
+ *     limit_conn_zone  $server_name zone=servers:10m;
+
+ *
+ *     server {
+ *         listen         9877;
+ *         server_name    localhost;
+ *
+ *         root           /media/FLV;
+ *         location ~\.flv {
+ *             flv;
+ *
+ *             limit_conn   addr 1024;
+ *             limit_conn   servers 64;
+ *         }
+ *     }
+ * }
+ *
+ * 上面这段 conf 就在同一个 location 下配置了俩 limit_conn
+ */
+
 static char *
 ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -672,11 +786,29 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    // QUESTION: 为什么以 0 为 size？
     shm_zone = ngx_shared_memory_add(cf, &value[1], 0,
                                      &ngx_http_limit_conn_module);
     if (shm_zone == NULL) {
         return NGX_CONF_ERROR;
     }
+
+    /*
+     * NOTE: 这里有个问题，如果我没有配置 limit_conn_zone，而直接使用了 limit_conn
+     *       这样的配置文件也是没有问题的。
+     *       那么就会造成产生 size 为 0 的 zone，这个在 ngx_init_cycle 的时候会报错
+     *       是不是可以加上下面这段代码：
+     *
+     *  if (shm_zone->shm.size == 0) {
+     *      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+     *                         "no zone named \"%V\"", &value[1]);
+     *      return NGX_CONF_ERROR;
+     *  }
+     *
+     * NOTE: 或者把不要用 ngx_shared_memory_add
+     *
+     *  ATTENTION: 上面这段代码是我写的，不是不小心被注释了
+     */
 
     limits = lccf->limits.elts;
 
@@ -689,6 +821,21 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    /*
+     * NOTE: 虽然像上面说的，多个 limit_conn 可以共存，但是必须是不同的 limit_conn_zone
+     *
+     * location ~\.flv {
+     *     limit_conn  addr 1024;
+     *     limit_conn  addr 2048;
+     * }
+     *
+     * GUESS: 或许上面的 ngx_shared_memory_add 就是为了找到该 name 对应的 zone 的地址
+     *        然后下面通过地址可以判断是否多个 limit_conn 用了一个 zone
+     *        然后把 size 设置为 0 就是为了消除 size 的影响？
+     *        还是说这里根本不想分配内存？但是这样后面怎么在 shm_zone 里面分配内存呢？
+     *
+     * TODO: 还没有细看 ngx_shared_memory_add 函数
+     */
     for (i = 0; i < lccf->limits.nelts; i++) {
         if (shm_zone == limits[i].shm_zone) {
             return "is duplicate";
@@ -702,12 +849,16 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    // NOTE: u_short 类型
     if (n > 65535) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "connection limit must be less 65536");
         return NGX_CONF_ERROR;
     }
 
+    /*
+     *
+     */
     limit = ngx_array_push(&lccf->limits);
     if (limit == NULL) {
         return NGX_CONF_ERROR;
@@ -739,6 +890,11 @@ ngx_http_limit_conn_add_variables(ngx_conf_t *cf)
 }
 
 
+/*
+ * NOTE: 这个函数决定本模块在哪个阶段生效
+ *
+ * QUESTION: 但是为什么用 postconfiguration 来做呢？
+ */
 static ngx_int_t
 ngx_http_limit_conn_init(ngx_conf_t *cf)
 {
