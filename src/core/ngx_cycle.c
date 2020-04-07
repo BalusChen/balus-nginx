@@ -498,6 +498,18 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
                 goto shm_zone_found;
             }
 
+            /*
+             * NOTE: 走到这里说明找到了 name 相同的，但是因为 tag/size 不同，或者
+             *       新的 shm 设置了 noreuse 标志，所以不重用 oshm_zone
+             *
+             * QUESTION: 但是 name 相同的不只一个吧，走到这里来可能是因为 name
+             *           相同但是 tag 不同，后面如果找到了 name 和 tag 都相同的
+             *           那不是错过了？
+             *
+             * NOTE: 在 ngx_shared_memory_add 函数中可以看出，不允许 name 相同但是
+             *       tag 不同的情况。所以不会出现上面这个问题。但是新的问题是，感觉 tag
+             *       和 name 有一个就可以了啊
+             */
             break;
         }
 
@@ -979,6 +991,9 @@ ngx_init_zone_pool(ngx_cycle_t *cycle, ngx_shm_zone_t *zn)
 
     if (zn->shm.exists) {
 
+        /*
+         * NOTE: 新分配的内存都是 0 值，所以如果 sp == sp->addr，那么说明已经初始化过了
+         */
         if (sp == sp->addr) {
             return NGX_OK;
         }
@@ -1337,6 +1352,10 @@ ngx_shared_memory_add(ngx_conf_t *cf, ngx_str_t *name, size_t size, void *tag)
             continue;
         }
 
+        /*
+         * QUESTION: 相同 name 的就必须得相同的 tag?
+         *           那要 tag 何用？一个 name 不就够了？
+         */
         if (tag != shm_zone[i].tag) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                             "the shared memory zone \"%V\" is "
@@ -1345,10 +1364,33 @@ ngx_shared_memory_add(ngx_conf_t *cf, ngx_str_t *name, size_t size, void *tag)
             return NULL;
         }
 
+        /*
+         * NOTE: 这里允许先使用一个 zone，然后再声明它，比如 limit_conn 指令：
+         *
+         * http {
+         *     server {
+         *         listen         9877;
+         *         server_name    localhost;
+         *
+         *         location ~\.flv {
+         *             limit_conn addr 32;
+         *         }
+         *      }
+         *      limit_conn_zone $binary_remote_addr zone=addr:10m;
+         * }
+         *
+         * NOTE: 像上面这样，limit_conn 在 limit_conn_zone 指令之前被解析，解析 'addr'
+         *       时传给 ngx_shared_memory_add 的 size 为 0，后面解析 limit_conn_zone
+         *       时才给 addr 这个 zone 设置 size 为 10m
+         */
         if (shm_zone[i].shm.size == 0) {
             shm_zone[i].shm.size = size;
         }
 
+        /*
+         * NOTE: 正常情况下，先声明再使用 zone 时，比如上面说的 limit_conn_zone 和
+         *       limit_conn，使用 limit_conn 时传入的 size 为 0，所以就不加入比较了
+         */
         if (size && size != shm_zone[i].shm.size) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                             "the size %uz of shared memory zone \"%V\" "

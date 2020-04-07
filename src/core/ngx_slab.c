@@ -470,9 +470,10 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
              *       个 uintptr_t，其中 +1 是加上了请求的内存块
              *
              * NOTE: 注意这里为什么要用一个 for 循环，按照 4K 的 page，min_shift = 3
-             *       n+1 最大也就是 8。但是在有些 page 很大的系统上，比如 ppc64 的
-             *       page 大小为 64KB，而如果 shift = 3，那么 n = 2^13 / 2^6 = 128，
-             *       那么一个 uintptr_t 就放不下了
+             *       n+1 最大也就是 8。那么在 bitmap 中给由 bitmap 本身所占用的
+             *       内存标记为 1 最多只需要标记一个 uintptr_t，但是在有些 page
+             *       很大的系统上，比如 ppc64 的 page 大小为 64KB，而如果 shift = 3，
+             *       那么 n = 2^13 / 2^6 = 128，那么一个 uintptr_t 就放不下了，
              *       所以这里修复了一次 bug，原来假设一个 uintptr_t 就可以放下：
              *       bitmap[0] = ((uintptr_t) 2 << n) - 1;
              *
@@ -631,6 +632,9 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
         goto fail;
     }
 
+    /*
+     * NOTE: 先找到这块内存所在的 page
+     */
     n = ((u_char *) p - pool->start) >> ngx_pagesize_shift;
     page = &pool->pages[n];
     slab = page->slab;
@@ -640,23 +644,61 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
 
     case NGX_SLAB_SMALL:
 
+        /*
+         * NOTE: 对于 NGX_SLAB_SMALL 类型的内存块，其 page->slab 字段存储的是该
+         *       page 中每个内存块的大小
+         */
         shift = slab & NGX_SLAB_SHIFT_MASK;
         size = (size_t) 1 << shift;
 
+        /*
+         * NOTE: size 指的是内存块的大小，free 内存块的时候传入的必须是内存块的
+         *       首地址，比如内存块是 128B，那么传入的地址的最后 6bit 必须都是 0
+         */
         if ((uintptr_t) p & (size - 1)) {
             goto wrong_chunk;
         }
 
+        /*
+         * NOTE: (p & (ngx_pagesize - 1)) 得到的是在 p 在 page 中的偏移量
+         *       (p & (ngx_pagesize - 1)) >> shift 得到的是 p 是 page 中的第几个
+         *       内存块，同时也表示这个内存块在所属 page 中的 bitmap 对应的 bit
+         *       处于这个 bitmap 的第几个 uintptr_t
+         *       而对于 m， n % (8 * sizeof(uintptr_t)) 表示这个对应的 bit 为这
+         *       个 uintptr_t 中的第几个，1 << (n % 8 * sizeof(uintptr_t)) 就得
+         *       到了该 bit 对应的掩码，也就是 m
+         *
+         * EXAMPLE: 比如 ngx_pagesize = 4k, p = 0x7F9654401AA0，内存块大小为 32B，
+         *          那么得到的 n =
+         *
+         * NOTE: bitmap 是怎么计算的？
+         *       bitmap 存放在每个 page 最开始的位置，把 p 中低于一个 page 大小
+         *       的 bit 都置为 0，就得到了该 page 的开始位置，也就是该 page 对应
+         *       的 bitmap 的位置
+         *
+         * QUESTION: 想到了两种情况：
+         *           1. free 之后满页变成了半满页
+         *           2. free 之后半满页变成了空页
+         *           如何分别处理？
+         */
         n = ((uintptr_t) p & (ngx_pagesize - 1)) >> shift;
         m = (uintptr_t) 1 << (n % (8 * sizeof(uintptr_t)));
         n /= 8 * sizeof(uintptr_t);
         bitmap = (uintptr_t *)
                              ((uintptr_t) p & ~((uintptr_t) ngx_pagesize - 1));
 
+        // NOTE: 需要确保 bitmap 中这个内存块的确没有释放，防止 double free
         if (bitmap[n] & m) {
             slot = shift - pool->min_shift;
 
             if (page->next == NULL) {
+                /*
+                 * NOTE: 如果 page->next 为 NULL，，那么说明这个 page 是一个全满
+                 *       页，因为如果是半满页，那么由于链表是一个双向循环链表，
+                 *       所以 page->next 不可能为 NULL。
+                 *       所以这里需要把这个 page 加入到对应的半满页 slot 链表中
+                 *       去
+                 */
                 slots = ngx_slab_slots(pool);
 
                 page->next = slots[slot].next;
@@ -666,14 +708,44 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
                 page->next->prev = (uintptr_t) page | NGX_SLAB_SMALL;
             }
 
+            // NOTE: 在 bitmap 中标记这块内存已释放
             bitmap[n] &= ~m;
 
+            /*
+             * NOTE: ngx_pagesize >> shift 表示这个 page 有多少个这样的内存块
+             *       (1 << shift) * 8 表示一个内存块可以存放多少个 bit
+             *       因为对于 NGX_SLAB_SMALL 的情况，是用内存块而不是 slab 字段
+             *       来存放 bitmap 的
+             *       所以 n 表示需要多少个内存块才可以放下这个 page 中的所有内存
+             *       块的 bitmap
+             *       这条语句在 ngx_slab_alloc_locked 函数中也有
+             */
             n = (ngx_pagesize >> shift) / ((1 << shift) * 8);
 
             if (n == 0) {
                 n = 1;
             }
 
+            /*
+             * NOTE: bitmap 本身占用的内存需要在 bitmap 中被标记为 BUSY，这里 i
+             *       就是表示 bitmap 自己占用的内存占几个 uintptr_t，然后 m 则表
+             *       示多出来的不足 1 个 uintptr_t 的部分的掩码(其实取反之后才是)
+             *
+             * QUESTION: 如果 bitmap 本身占用的内存正好是 uintptr_t 的整数倍呢？
+             *           那么 bitmap[i] 不就超出了 bitmap 的界限了么？但是此时的
+             *           m 也是 0，因为 1 << 0 == 1
+             *
+             * NOTE: bitmap 本身占用的内存在 bitmap 需要用 >= 1 * uintptr_t 来表
+             *       示的情况只在大页系统中才存在？
+             *
+             * QUESTION: 为什么要对 bitmap 占的最后一个 uintptr_t 特殊检查？
+             *           如果实际上 bitmap 本身在 bitmap 中占用的 bit 数不足 64，
+             *           那么我理解这里只是为了检查该 bitmap 本身占用的内存是否
+             *           在 bitmap 自己中被标记好了。但是如果是大页的情况呢？难
+             *           道不应该检查所有的 uintptr_t 么？
+             *
+             * EXAMPLE: 假设 bitmap 大小为
+             */
             i = n / (8 * sizeof(uintptr_t));
             m = ((uintptr_t) 1 << (n % (8 * sizeof(uintptr_t)))) - 1;
 
@@ -681,6 +753,13 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
                 goto done;
             }
 
+            /*
+             * NOTE: map 表示该 page 中所有内存块需要多少个 uintptr_t 才可以存放
+             *       它们对应的 bitmap ？
+             *       前面的 i 表示的是 bitmap 本身占有的内存块的个数
+             *       这里检查 page 中除 bitmap 外的其他内存是否仍被使用，如果没
+             *       有，那么说明这个 page 可以放入 free 链表
+             */
             map = (ngx_pagesize >> shift) / (8 * sizeof(uintptr_t));
 
             for (i = i + 1; i < map; i++) {
@@ -700,6 +779,11 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
 
     case NGX_SLAB_EXACT:
 
+        /*
+         * NOTE: m 表示该内存块对应的掩码
+         *       (p & (ngx_pagesize - 1)) >> ngx_slab_exact_shift 得到的是这个内
+         *       存块是该 page 中的第几个
+         */
         m = (uintptr_t) 1 <<
                 (((uintptr_t) p & (ngx_pagesize - 1)) >> ngx_slab_exact_shift);
         size = ngx_slab_exact_size;
@@ -711,6 +795,17 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
         if (slab & m) {
             slot = ngx_slab_exact_shift - pool->min_shift;
 
+            /*
+             * NOTE: NGX_SLAB_BUSY 表示该 page 的所有内存块都在被使用，是个满页，
+             *       所以释放完这个内存块后需要将这个 page 移动到对应的半满页
+             *       slot 链表中
+             *
+             * NOTE: 这个 if 和下面的 ngx_slab_free_pages 应该是互斥的，这个 if
+             *       是将满页转移到半满页，下面的 ngx_slab_free_pages 是将半满页
+             *       移入 free 链表
+             *
+             * QUESTION: 那么为什么不直接 goto done 呢？
+             */
             if (slab == NGX_SLAB_BUSY) {
                 slots = ngx_slab_slots(pool);
 
@@ -751,6 +846,11 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
         if (slab & m) {
             slot = shift - pool->min_shift;
 
+            /*
+             * NOTE: 只有 NGX_SLAB_EXACT 的情况才能直接用 page->slab 和
+             *       NGX_SLAB_BUSY 直接比较，对于 BIG 和 SMALL 这两种情况，则需
+             *       使用 next 指针来看它是不是在 slot 双向循环链表中
+             */
             if (page->next == NULL) {
                 slots = ngx_slab_slots(pool);
 
