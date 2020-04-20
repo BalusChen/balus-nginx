@@ -20,6 +20,10 @@ include_directories(/usr/local/opt/openssl/include)
 include_directories(3rd/lua-nginx-module/api)
 include_directories(3rd/lua-nginx-module/src)
 include_directories(/usr/local/opt/openresty/luajit/include/luajit-2.1)
+# rtmp
+include_directories(3rd/nginx-rtmp-module)
+include_directories(3rd/nginx-rtmp-module/hls)
+include_directories(3rd/nginx-rtmp-module/dash)
 # njs
 include_directories(3rd/njs/src)
 include_directories(3rd/njs/build)
@@ -29,9 +33,11 @@ add_executable(nginx
         objs/ngx_auto_headers.h
         objs/ngx_modules.c
         # my modules
-        3rd/my-module/nginx-flv-module/ngx_http_flv_module.c
-        3rd/my-module/nginx-ncp3-module/ngx_stream_socks5_module.c
-        3rd/my-module/nginx-http-testvariable-module/ngx_http_testvariable_module.c
+        3rd/my-modules/nginx-flv-module/ngx_http_flv_module.c
+        # 3rd/my-modules/nginx-ncp3-module/ngx_stream_socks5_module.c
+        3rd/my-modules/nginx-http-testvariable-module/ngx_http_testvariable_module.c
+        3rd/my-modules/nginx-testslab-module/ngx_http_testslab_module.c
+        3rd/my-modules/nginx-http-inotify-module/ngx_http_inotify_module.c
 
         # lua module
         3rd/lua-nginx-module/src/ngx_http_lua_accessby.c
@@ -93,6 +99,40 @@ add_executable(nginx
         3rd/lua-nginx-module/src/ngx_http_lua_worker.c
 
         # rtmp module
+        3rd/nginx-rtmp-module/ngx_rtmp_play_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_mp4_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_shared.c
+        3rd/nginx-rtmp-module/ngx_rtmp_access_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_auto_push_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_codec_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_live_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_exec_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_record_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_control_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_amf.c
+        3rd/nginx-rtmp-module/ngx_rtmp_core_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_bandwidth.c
+        3rd/nginx-rtmp-module/ngx_rtmp_receive.c
+        3rd/nginx-rtmp-module/ngx_rtmp_bitop.c
+        3rd/nginx-rtmp-module/ngx_rtmp_relay_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_handler.c
+        3rd/nginx-rtmp-module/ngx_rtmp_handshake.c
+        3rd/nginx-rtmp-module/ngx_rtmp_eval.c
+        3rd/nginx-rtmp-module/ngx_rtmp_log_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_send.c
+        3rd/nginx-rtmp-module/ngx_rtmp_proxy_protocol.c
+        3rd/nginx-rtmp-module/ngx_rtmp_limit_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_netcall_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_cmd_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_stat_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_notify_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_init.c
+        3rd/nginx-rtmp-module/ngx_rtmp_flv_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp.c
+        3rd/nginx-rtmp-module/hls/ngx_rtmp_mpegts.c
+        3rd/nginx-rtmp-module/hls/ngx_rtmp_hls_module.c
+        3rd/nginx-rtmp-module/dash/ngx_rtmp_mp4.c
+        3rd/nginx-rtmp-module/dash/ngx_rtmp_dash_module.c
 
         # njs
         3rd/njs/nginx/ngx_http_js_module.c
