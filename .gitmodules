@@ -1,0 +1,12 @@
+[submodule "3rd/tengine"]
+	path = 3rd/tengine
+	url = git@github.com:alibaba/tengine.git
+[submodule "3rd/lua-nginx-module"]
+	path = 3rd/lua-nginx-module
+	url = git@github.com:openresty/lua-nginx-module.git
+[submodule "3rd/njs"]
+	path = 3rd/njs
+	url = git@github.com:nginx/njs.git
+[submodule "3rd/nginx-rtmp-module"]
+	path = 3rd/nginx-rtmp-module
+	url = git@github.com:arut/nginx-rtmp-module.git
