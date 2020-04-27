@@ -27,6 +27,12 @@ include_directories(3rd/nginx-rtmp-module/dash)
 # njs
 include_directories(3rd/njs/src)
 include_directories(3rd/njs/build)
+# unit
+include_directories(3rd/unit/src)
+include_directories(3rd/unit/src/java)
+include_directories(3rd/unit/src/nodejs)
+include_directories(3rd/unit/src/perl)
+include_directories(3rd/unit/src/ruby)
 
 add_executable(nginx
         objs/ngx_auto_config.h
