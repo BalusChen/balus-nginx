@@ -261,6 +261,10 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
 
     if (size > pool->min_size) {
         shift = 1;
+        /*
+         * NOTE: 计算 log2(size-1)，这里是从 size -1 开始循环，这是为了应对恰好是 2
+         *       的幂的情况
+         */
         for (s = size - 1; s >>= 1; shift++) { /* void */ }
         slot = shift - pool->min_shift;
 
@@ -278,6 +282,10 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
     slots = ngx_slab_slots(pool);
     page = slots[slot].next;
 
+    /*
+     * NOTE: 这个槽中的链表只要不为空(page->next != page)，那么链表首元素一定是可用的，
+     *       因为 slots 数组里面都是半满页，也就是每个 page 都至少存在一个空闲内存块
+     */
     if (page->next != page) {
 
         /*
@@ -292,6 +300,11 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
          */
         if (shift < ngx_slab_exact_shift) {
 
+            /*
+             * NOTE: 如何根据一个 ngx_slab_page_t 结构体拿到对应的 page 的偏移量？
+             *       首先计算这个结构体在 pool->pages 数组中是第几个元素，
+             *       然后就知道这是第几个页面，加上 pool->start 就得到了该 page 首地址
+             */
             bitmap = (uintptr_t *) ngx_slab_page_addr(pool, page);
 
             map = (ngx_pagesize >> shift) / (8 * sizeof(uintptr_t));
@@ -309,9 +322,9 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
                         bitmap[n] |= m;
 
                         /*
-                         * NOTE: n * 8 * sizeof(uintptr_t) + i 表示的是找到的这块内存
-                         *       在这个 page 里面是第几块内存
-                         *       << shift 就拿到了这块内存在该 page 中的偏移量
+                         * NOTE: n * 8 * sizeof(uintptr_t) + i 表示的是找到的这个
+                         *       内存块在这个 page 里面是第几个， << shift 就得到了
+                         *       这个内存块在该 page 中的偏移量
                          */
                         i = (n * 8 * sizeof(uintptr_t) + i) << shift;
 
@@ -389,7 +402,11 @@ ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
              *       所以这里处理的是 (ngx_slab_exact_size, ngx_slab_max_size] 的情况
              *
              * NOTE: 对于 > ngx_slab_exact_shift 的内存块，其 slab 字段分为两部分
-             *       高 32 bit 表示bitmap，低 32 bit 以位偏移的形式表示内存块大小
+             *       高 32 bit 用作 bitmap，低 32 bit 以位偏移的形式表示内存块大小
+             *
+             * NOTE: 比如 shift = 8，也就是 256B 的内存块，得到的 mask 为：
+             *       mask = (1 << (4096 >> 8)) - 1 = 15
+             *       得到了 bitmap，但是位置不对，所以将其移动到高 32 位去
              */
             mask = ((uintptr_t) 1 << (ngx_pagesize >> shift)) - 1;
             mask <<= NGX_SLAB_MAP_SHIFT;
@@ -646,14 +663,17 @@ ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
 
         /*
          * NOTE: 对于 NGX_SLAB_SMALL 类型的内存块，其 page->slab 字段存储的是该
-         *       page 中每个内存块的大小
+         *       page 中每个内存块的大小的偏移量
+         *       而 SMALL 类型的块大小为 < 64B （在 pagesize=4k 的情况下）
+         *       所以 slab 用最低 4 位就可以表示了，所以先 slab & NGX_SLAB_SHIFT_MASK
          */
         shift = slab & NGX_SLAB_SHIFT_MASK;
         size = (size_t) 1 << shift;
 
         /*
          * NOTE: size 指的是内存块的大小，free 内存块的时候传入的必须是内存块的
-         *       首地址，比如内存块是 128B，那么传入的地址的最后 6bit 必须都是 0
+         *       首地址，比如内存块是 32B，也就是 2^5，那么传入的地址的最后 5bit
+         *       必须都是 0
          */
         if ((uintptr_t) p & (size - 1)) {
             goto wrong_chunk;

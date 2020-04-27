@@ -570,6 +570,9 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     ngx_http_core_srv_conf_t   **cscfp;
 
     cscfp = cmcf->servers.elts;
+    /*
+     * NOTE: 这个 ctx 还是解析 http 指令时创建的 ngx_http_conf_ctx_t
+     */
     ctx = (ngx_http_conf_ctx_t *) cf->ctx;
     saved = *ctx;
     rv = NGX_CONF_OK;
@@ -578,9 +581,48 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
 
         /* merge the server{}s' srv_conf's */
 
+        /*
+         * ATTENTION: 规定几个名词：
+         *            loc conf：最小生效粒度为 location{...} 的配置项（但是出现的作用域
+         *            可能不止 location{...}）
+         *
+         * NOTE: ctx 是解析 http 指令时创建的 ngx_http_conf_ctx_t，所以这里的
+         *       srv_conf 是存储的是在 http{...} 块下出现的（用 create_srv_conf 创建）
+         *       的配置项。而 cscfp[s]->ctx->srv_conf 是在解析 server{...} 时创建的
+         *       配置项
+         *       一、之所以要做这个赋值，cf 这个参数是 merge_srv_conf 回调的参数，所以用户
+         *       在这个回调中，可以通过 cf->ctx 取到相应的配置项。而此时用户既然设置了
+         *       merge_srv_conf，那么肯定希望自己从 cf->ctx 中拿到的 srv_conf 存储的
+         *       是 server{...} 下的配置项（这个是我猜测的）
+         *       所以此时 ctx 这个 ngx_http_conf_ctx_t 中的三个字段（数组）分别存储：
+         *       1. main_conf: main conf 在 http{...} 中设置的值
+         *       2. srv_conf: srv conf 在 server{...} 中设置的值
+         *       3. loc_conf: loc conf 在 http{...} 中设置的值(why not loc conf in server{})
+         *       二、对于出现在 server{...} 中的配置项，不仅仅需要 merge_srv_conf，
+         *       还得 merge_loc_conf，便于后面将 loc conf 给 merge 到 location{...}
+         *       中去。对 server{...} 中的 loc conf 调用 merge_loc_conf 之前会调用
+                 ctx->loc_conf = cscfp[s]->ctx->loc_conf; 这个时候 ctx 为：
+         *       1. main_conf: main conf 在 http{...} 中设置的值
+         *       2. srv_conf: srv conf 在 server{...} 中设置的值
+         *       3. loc_conf: loc conf 在 server{...} 中设置的值
+         *       三、后续在 ngx_http_merge_locations 函数中调用 merge_loc_conf 之前
+         *       还会设置 ctx->loc_conf = clcf->loc_conf;
+         *       1. main_conf: main conf 在 http{...} 中设置的值
+         *       2. srv_conf: srv conf 在 server{...} 中设置的值
+         *       3. loc_conf: loc conf 在 location{...} 中设置的值
+         *
+         * SUMMRIZE: 这样的话，每一层的 merge_srv/loc_conf，都可以拿到正确的配置项
+         */
         ctx->srv_conf = cscfp[s]->ctx->srv_conf;
 
         if (module->merge_srv_conf) {
+
+            /*
+             * NOTE: saved.srv_conf[ctx_index] 是该模块在解析 http{...} 时调用
+             *       create_srv_conf 创建的配置项，是 parent
+             *       cscfp[s]->ctx->srv_conf[ctx_index] 是该模块在解析 server{...}
+             *       是调用 create_srv_conf 创建的配置项，是 child
+             */
             rv = module->merge_srv_conf(cf, saved.srv_conf[ctx_index],
                                         cscfp[s]->ctx->srv_conf[ctx_index]);
             if (rv != NGX_CONF_OK) {
@@ -588,6 +630,13 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
             }
         }
 
+        /*
+         * NOTE: 注意这里调用了 merge_loc_conf，但是其实只是把出现在 http{...} 下的 loc
+         *       conf 给 merge 到了 server{...} 块下的 loc conf；后续在
+         *       ngx_http_merge_locations 中还得继续调用 merge_loc_conf，把 server{...}
+         *       中的 loc conf 给 merge 到 location{...} 下
+         *       所以这里相当于一个中转的作用
+         */
         if (module->merge_loc_conf) {
 
             /* merge the server{}'s loc_conf */
@@ -602,6 +651,27 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
 
             /* merge the locations{}' loc_conf's */
 
+            /*
+             * NOTE: location{...} 是可以嵌套的，比如：
+             *
+             * server {
+             *     listen        9877;
+             *     server_name   localhost;
+             *
+             *     location /L1 {
+             *
+             *         location /LL1 {
+             *
+             *         }
+             *     }
+             *
+             *     location /L2 {
+             *     }
+             * }
+             *
+             * NOTE: 每个 server{...} 块下的 ngx_http_core_loc_conf 的 locations
+             *       字段串联了该 server{...} 下的所有 location{...} 块
+             */
             clcf = cscfp[s]->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
             rv = ngx_http_merge_locations(cf, clcf->locations,
@@ -631,6 +701,10 @@ ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
     ngx_http_core_loc_conf_t   *clcf;
     ngx_http_location_queue_t  *lq;
 
+    /*
+     * NOTE: locations 为空，表示当前 server{...} 或者 location{...} 下没有
+     *       location{...} 块
+     */
     if (locations == NULL) {
         return NGX_CONF_OK;
     }
@@ -645,14 +719,24 @@ ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
         lq = (ngx_http_location_queue_t *) q;
 
         clcf = lq->exact ? lq->exact : lq->inclusive;
+        // NOTE: 注意这一句，在 ngx_http_merge_servers 中有解释
         ctx->loc_conf = clcf->loc_conf;
 
+        /*
+         * NOTE: loc_conf[ctx_index] 是该模块在父级 location{...} 调用
+         *       create_loc_conf 创建的结构体，为 parent
+         *       而 clcf->loc_conf[ctx_index] 是该模块在子级 location{...} 中调用
+         *       create_loc_conf 创建的结构体，为 child
+         */
         rv = module->merge_loc_conf(cf, loc_conf[ctx_index],
                                     clcf->loc_conf[ctx_index]);
         if (rv != NGX_CONF_OK) {
             return rv;
         }
 
+        /*
+         * NOTE: location{...} 是允许重复嵌套的，所以需要递归 merge
+         */
         rv = ngx_http_merge_locations(cf, clcf->locations, clcf->loc_conf,
                                       module, ctx_index);
         if (rv != NGX_CONF_OK) {
@@ -686,6 +770,13 @@ ngx_http_init_locations(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
         return NGX_OK;
     }
 
+    /*
+     * location 的选择策略可以看这里：
+     *
+     *     http://nginx.org/en/docs/http/ngx_http_core_module.html#location
+     *
+     * NOTE: exact_match > inclusive > regex > named > noname
+     */
     ngx_queue_sort(locations, ngx_http_cmp_locations);
 
     named = NULL;
@@ -731,11 +822,20 @@ ngx_http_init_locations(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
             continue;
         }
 
+        /*
+         * NOTE: 只有 if、limit_except 这些才有 noname
+         */
         if (clcf->noname) {
             break;
         }
     }
 
+    /*
+     * NOTE: 遇到 noname 才会从上面的循环中跳出，这样 q != sentinel
+     *       由于前面已经排序了，所以 [q, sentinel) 都是 noname 的
+     *       这里只是简单地将其丢弃，因为 noname 的不是真正的 location，
+     *       而是像 if、limit_except 等指令也编译成了 ngx_http_core_loc_conf_t
+     */
     if (q != ngx_queue_sentinel(locations)) {
         ngx_queue_split(locations, q, &tail);
     }
@@ -749,6 +849,12 @@ ngx_http_init_locations(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
         cscf->named_locations = clcfp;
 
+        /*
+         * NOTE: 前面已经把 noname 的都给移除了，所以如果有命名 location 的话，
+         *       可以保证 [named, sentinle) 都是命名 location。
+         *       这里讲所有的命名 location 移动到 cscf->named_locations 数组中
+         *       之所以是 cscf，不是 clcf，是因为命名 location 只能直属 server{..} 块
+         */
         for (q = named;
              q != ngx_queue_sentinel(locations);
              q = ngx_queue_next(q))
@@ -775,6 +881,12 @@ ngx_http_init_locations(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
         pclcf->regex_locations = clcfp;
 
+        /*
+         * NOTE: 经过了上面两个 if，noname 和 named 都被移除出 locations 链表，
+         *       按照先前排序的情况，如果存在带正则的 location 的话，
+         *       那么[regex, sentinel) 都是带正则的，
+         *       这里将同一级的所有带正则的 clcf 都移至上级的 clcf->regex_locations 数组
+         */
         for (q = regex;
              q != ngx_queue_sentinel(locations);
              q = ngx_queue_next(q))
@@ -809,6 +921,10 @@ ngx_http_init_static_location_trees(ngx_conf_t *cf,
         return NGX_OK;
     }
 
+    /*
+     * QUESTION: 为什么 ngx_http_init_locations 中没有这个判断，
+     *           而只是判断了一下 locations 是否为 NULL？
+     */
     if (ngx_queue_empty(locations)) {
         return NGX_OK;
     }
@@ -862,6 +978,14 @@ ngx_http_add_location(ngx_conf_t *cf, ngx_queue_t **locations,
         return NGX_ERROR;
     }
 
+    /*
+     * NOTE: 这里重点是要理解什么 exact 和 inclusive 的真正意义。
+     *       无论是exact_match，还是 named，又或者是 regex，只有请求的 uri 完全匹配上了
+     *       所有字符，或者模式（regex），才算是匹配了这个 location，所以是 exact
+     *       而对于前缀匹配（noregex 的抢占式也算在内）的情况，则只需请求 uri 前缀匹配即可
+     *       所以是 inclusive
+     */
+
     if (clcf->exact_match
 #if (NGX_PCRE)
         || clcf->regex
@@ -900,6 +1024,19 @@ ngx_http_cmp_locations(const ngx_queue_t *one, const ngx_queue_t *two)
 
     first = lq1->exact ? lq1->exact : lq1->inclusive;
     second = lq2->exact ? lq2->exact : lq2->inclusive;
+
+    /*
+     * NOTE: cmp(a, b) > 0，那么 a 在 b 之后
+     *
+     * NOTE: 整体的比较顺序：
+     *       1. 先比较 noname 属性，noname 的排后面；都是 noname 则不换位置；都不是则继续比较下一个属性
+     *       2. 在比较 named 属性，命名 location 的排后面，都是 named 则不换位置，都不是则继续比较下一个属性
+     *       3. 再比较 regex 属性，regex 的排后面，都是 regex 则不换位置；都不是则继续比较下一个属性
+     *       4. 走到这里说明 a 和 b 都是 !noname && !named && !regex。然后如果 a 和 b 前缀相同，那么
+     *       exact_match > inclusive > regex > named > noname
+     *
+     * EXAMPLE: 只要
+     */
 
     if (first->noname && !second->noname) {
         /* shift no named locations to the end */
@@ -949,10 +1086,36 @@ ngx_http_cmp_locations(const ngx_queue_t *one, const ngx_queue_t *two)
 
 #endif
 
+    // QUESTION: 为什么要 +1 ？
     rc = ngx_filename_cmp(first->name.data, second->name.data,
                           ngx_min(first->name.len, second->name.len) + 1);
 
     if (rc == 0 && !first->exact_match && second->exact_match) {
+
+        /*
+         * NOTE: first 和 second 的前缀相同，那么说明其中一个一定是另一个的 inclusive
+         *          1. first 不为 exact_match second 为 exact_match，那么 first 在后
+         *          2. first 为 exact_match 而 second 不为 exact_match，那么 second 在后（这种没有明写，WHY？）
+         *          3. 两者都不为 exact_match：按照字典序排序
+         */
+
+        /*
+         * NOTE: 这里没有明着写 rc == 0 && first_exact_match && !exact_match 的情况。
+         *       因为在 ngx_queue_sort 函数中，传入给本 cmp 比较器的 first 和 second
+         *       队列中，first 一定在 second 之前（这个可以看 ngx_queue_sort 函数：
+                    if (cmp(prev, q) <= 0) {...}
+         *       ；而对于 locations 队列，exact_match 的一定是在 inclusive 的之前（真的么？）
+         *
+         * QUESTION: 但是我咋感觉不对劲呢？而且这种预设外部调用方式的做法也是不对的吧？
+         *
+         *           location /hello {
+         *              ...
+         *           }
+         *           location /helloworld {
+         *              ...
+         *           }
+         */
+
         /* an exact match must be before the same inclusive one */
         return 1;
     }
@@ -969,6 +1132,9 @@ ngx_http_join_exact_locations(ngx_conf_t *cf, ngx_queue_t *locations)
 
     q = ngx_queue_head(locations);
 
+    /*
+     * NOTE: 这里不是用 q != ngx_queue_sentinel(locations) 来判断的
+     */
     while (q != ngx_queue_last(locations)) {
 
         x = ngx_queue_next(q);
@@ -980,6 +1146,10 @@ ngx_http_join_exact_locations(ngx_conf_t *cf, ngx_queue_t *locations)
             && ngx_filename_cmp(lq->name->data, lx->name->data, lx->name->len)
                == 0)
         {
+            /*
+             * NOTE: 如果两个 location name 完全一样（而且是同一级）
+             */
+
             if ((lq->exact && lx->exact) || (lq->inclusive && lx->inclusive)) {
                 ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
                               "duplicate location \"%V\" in %s:%ui",
@@ -1002,6 +1172,13 @@ ngx_http_join_exact_locations(ngx_conf_t *cf, ngx_queue_t *locations)
 }
 
 
+/*
+ * NOTE: 将具有相同前缀的前缀匹配 location 放到 list 链表中
+ *       这个函数只处理同一级的所有 location（即直属于某个 server{...}/location{...}
+ *       的所有 location{...}）而不需要嵌套的 location{...}，这个由调用
+ *       ngx_http_create_locations_list 的函数自己递归处理
+ */
+
 static void
 ngx_http_create_locations_list(ngx_queue_t *locations, ngx_queue_t *q)
 {
@@ -1010,12 +1187,19 @@ ngx_http_create_locations_list(ngx_queue_t *locations, ngx_queue_t *q)
     ngx_queue_t                *x, tail;
     ngx_http_location_queue_t  *lq, *lx;
 
+    /*
+     * NOTE: 传入的 q 是开始处理的节点
+     *       传入的 locations 是 sentinel
+     */
     if (q == ngx_queue_last(locations)) {
         return;
     }
 
     lq = (ngx_http_location_queue_t *) q;
 
+    /*
+     * NOTE: 如果不是 inclusive，也就是说不是【前缀匹配】，那么直接跳过，处理下一个结点
+     */
     if (lq->inclusive == NULL) {
         ngx_http_create_locations_list(locations, ngx_queue_next(q));
         return;
@@ -1030,6 +1214,13 @@ ngx_http_create_locations_list(ngx_queue_t *locations, ngx_queue_t *q)
     {
         lx = (ngx_http_location_queue_t *) x;
 
+        /*
+         * NOTE: 经过前面的一系列操作，现在 locations 链表中的节点和顺序：
+         *       exact > inclusive
+         *       而对于 exact 和 inclusive 同名的情况，则将 inclusive 移入 exact 节点
+         *       的 inclusive 指针中
+         *       所以碰到第一个 name 不相等的就退出。
+         */
         if (len > lx->name->len
             || ngx_filename_cmp(name, lx->name->data, len) != 0)
         {
@@ -1039,19 +1230,42 @@ ngx_http_create_locations_list(ngx_queue_t *locations, ngx_queue_t *q)
 
     q = ngx_queue_next(q);
 
+    /*
+     * NOTE: 如果 q == x，那么说明一次循环都没有进入，也就是说没有其他 location 以 q
+     *       的名字为前缀，那么从 x（也就是 q->next）开始继续递归处理以 x 的名字为前缀
+     *       的节点
+     */
     if (q == x) {
         ngx_http_create_locations_list(locations, x);
         return;
     }
 
+    /*
+     * NOTE：分割成 [locations, q) 和 [q, locations) 两部分
+     *       其中 tail 是 [q, locations) 部分的 sentinel（tail->next = q）
+     *
+     * NOTE: 按照常理是应该把 [q, x) 给分割出来加入到 lq->list 的，这里还没有判断 x 是否
+     *       == locations，但是就算 x != locations 也没有什么问题，后面判断了再把
+     *       [x, locations) 从 lq->list 移除出来放到 locations 中去
+     */
     ngx_queue_split(locations, q, &tail);
     ngx_queue_add(&lq->list, &tail);
 
+    /*
+     * NOTE: 如果 x == sentinel，说明从 [q, sentinel) 都以 q 的名字为前缀，那么直接递归
+     *       处理更长的前缀
+     */
     if (x == ngx_queue_sentinel(locations)) {
         ngx_http_create_locations_list(&lq->list, ngx_queue_head(&lq->list));
         return;
     }
 
+    /*
+     * NOTE: 这种是普通情况，就是一部分 [q, x) 以 q 的名字为前缀，另一部分 [x, sentinel)
+     *       则不是，那么把 [q, x) 加入到 lq->list，并递归处理之，
+     *       但是前面已经把 [q, locations) 都加入到了 lq->list，所以这里需要把 [x, locations)
+     *       从 lq->list 中移除，放到 locations 链表中去
+     */
     ngx_queue_split(&lq->list, x, &tail);
     ngx_queue_add(locations, &tail);
 
@@ -1092,6 +1306,10 @@ ngx_http_create_locations_tree(ngx_conf_t *cf, ngx_queue_t *locations,
     node->exact = lq->exact;
     node->inclusive = lq->inclusive;
 
+    /*
+     * QUESTION: 后面是用 node->auto_redirect 还是
+     *           node->exact->auto_redirect/node->inclusive->auto_redirect 呢？
+     */
     node->auto_redirect = (u_char) ((lq->exact && lq->exact->auto_redirect)
                            || (lq->inclusive && lq->inclusive->auto_redirect));
 
@@ -1101,6 +1319,12 @@ ngx_http_create_locations_tree(ngx_conf_t *cf, ngx_queue_t *locations,
     ngx_queue_split(locations, q, &tail);
 
     if (ngx_queue_empty(locations)) {
+        /*
+         * QUESTION: 没有看懂下面这个注释，如果 locations 中除了哨兵之外只有一个节点
+         *           那么 ngx_queue_middle(locations)返回的 q 就是该唯一节点
+         *           然后 ngx_queue_split(locations, q, tail)，得到的 locations 链
+         *           表节点个数为 0，tail 链表个数为 1。感觉和下面的注释不一样
+         */
         /*
          * ngx_queue_split() insures that if left part is empty,
          * then right one is empty too
@@ -1130,6 +1354,10 @@ inclusive:
         return node;
     }
 
+    /*
+     * NOTE: 构建 left/right 时传入的 prefix 参数都是外部传入的 prefix
+     *       但是构建 tree 时传入的是 prefix + len
+     */
     node->tree = ngx_http_create_locations_tree(cf, &lq->list, prefix + len);
     if (node->tree == NULL) {
         return NULL;

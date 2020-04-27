@@ -2910,12 +2910,39 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         }
     }
 
+    /*
+     * NOTE: 为了让 location{...} 和上一级关联起来
+     */
     clcf = ctx->loc_conf[ngx_http_core_module.ctx_index];
     clcf->loc_conf = ctx->loc_conf;
 
     value = cf->args->elts;
 
+    /*
+     * NOTE: 这里确定 ngx_http_core_loc_conf_t 中 noname/named/regex 等字段
+     *       后续作为对 location 排序的依据
+     *
+     * NOTE: location 的匹配规则可以看一下这篇文章：
+     *       https://juejin.im/post/5c8492b1e51d453ec256bf0b
+     */
+
     if (cf->args->nelts == 3) {
+
+        /*
+         * location [ = | ~ | ~* | ^~ ] uri {
+         *      ...
+         *  }
+         *
+         * NOTE: 以前我写 location（实际上只写过一个 flv）都是这样：
+         *          location ~\.flv {...}
+         *       这样其实 args 中只有两个元素。其中 ~ 是 mod，\.flv 是 location name
+         *       其实更加正规的写法是把 mod 和 name 给分开来（这也是 nginx 最初提供的）：
+         *          location ~ \.flv{...}
+         *       但是不是所有的 location name 都可以和 mod 之间不放空格，有一类 location
+         *       那么是 @xxx 的格式，这种被称为 named location（命名 location），这种
+         *       命名 location 一般用于 try_files 后面的内部请求，且命名 location 中
+         *       不可再嵌套命名 location，而且和前面的不一样，@ 和 name 必须连在一起
+         */
 
         len = value[1].len;
         mod = value[1].data;
@@ -2923,21 +2950,54 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
         if (len == 1 && mod[0] == '=') {
 
+            /*
+             * location = / {
+             *     ...
+             * }
+             *
+             * NOTE: 以 = 开头的 location name 表示需要精确匹配（exact_match）
+             *       （这种允许 regex 么？）
+             */
+
             clcf->name = *name;
             clcf->exact_match = 1;
 
         } else if (len == 2 && mod[0] == '^' && mod[1] == '~') {
+
+            /*
+             * location ^~ /blog {
+             *     ...
+             * }
+             *
+             * NOTE: 以 ^~ 开头的 location name 表示进行前缀匹配（noregex）
+             */
 
             clcf->name = *name;
             clcf->noregex = 1;
 
         } else if (len == 1 && mod[0] == '~') {
 
+            /*
+             * location ~ \.flv$ {
+             *     ...
+             * }
+             *
+             * NOTE: 以 ~ 开头表示这个 location name 是正则定义的，且区分大小写（regex）
+             */
+
             if (ngx_http_core_regex_location(cf, clcf, name, 0) != NGX_OK) {
                 return NGX_CONF_ERROR;
             }
 
         } else if (len == 2 && mod[0] == '~' && mod[1] == '*') {
+
+            /*
+             * location ~* \.(jpeg|png|jpg)$ {
+             *     ...
+             * }
+             *
+             * NOTE: 以 ~* 开头表示这个 location name 是正则定义的，且不区分大小写（regex）
+             */
 
             if (ngx_http_core_regex_location(cf, clcf, name, 1) != NGX_OK) {
                 return NGX_CONF_ERROR;
@@ -2987,9 +3047,26 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
         } else {
 
+            /*
+             * location /media {
+             *     ...
+             * }
+             *
+             * NOTE: 这种不带 mod 的 location name 也是允许的
+             */
+
             clcf->name = *name;
 
             if (name->data[0] == '@') {
+
+                /*
+                 * location @balus {
+                 *     ...
+                 * }
+                 *
+                 * NOTE：@ 后紧接着名字的为命名 location（named）
+                 */
+
                 clcf->named = 1;
             }
         }
@@ -2998,6 +3075,14 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     pclcf = pctx->loc_conf[ngx_http_core_module.ctx_index];
 
     if (cf->cmd_type == NGX_HTTP_LOC_CONF) {
+
+        /*
+         * NOTE: location 是可以嵌套的，单并不是可以任意嵌套，内外层的必须遵守一定的规则
+         *       1. 外层是精确匹配，则内部不允许嵌套 location
+         *       2. 外层是命名 location，则内部不允许嵌套 location
+         *       3. 命名 location 只能放在 server{...}，而不允许被嵌套在其他 location 下
+         *       4. 内部 location 必须以外部 location 的名字作为前缀
+         */
 
         /* nested location */
 
