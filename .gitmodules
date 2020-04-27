@@ -19,3 +19,6 @@
 [submodule "3rd/my-modules"]
 	path = 3rd/my-modules
 	url = git@github.com:BalusChen/my-nginx-modules.git
+[submodule "3rd/unit"]
+	path = 3rd/unit
+	url = git@github.com:nginx/unit.git
