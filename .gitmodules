@@ -22,3 +22,6 @@
 [submodule "3rd/unit"]
 	path = 3rd/unit
 	url = git@github.com:nginx/unit.git
+[submodule "3rd/quickjs"]
+	path = 3rd/quickjs
+	url = git@github.com:horhof/quickjs.git

@@ -17,7 +17,7 @@ include_directories(src/stream)
 include_directories(/usr/local/opt/pcre/include)
 include_directories(/usr/local/opt/openssl/include)
 # lua module
-include_directories(3rd/lua-nginx-module/api)
+include_directories(3rd/lua-nginx-module/src/api)
 include_directories(3rd/lua-nginx-module/src)
 include_directories(/usr/local/opt/openresty/luajit/include/luajit-2.1)
 # rtmp
