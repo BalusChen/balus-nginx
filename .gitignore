@@ -3,4 +3,5 @@
 .ccls-cache/
 .idea/
 objs/
+build/
 cmake-build-debug/
