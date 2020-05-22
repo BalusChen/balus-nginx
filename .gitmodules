@@ -1,6 +1,3 @@
-[submodule "3rd/tengine"]
-	path = 3rd/tengine
-	url = git@github.com:alibaba/tengine.git
 [submodule "3rd/lua-nginx-module"]
 	path = 3rd/lua-nginx-module
 	url = git@github.com:openresty/lua-nginx-module.git
