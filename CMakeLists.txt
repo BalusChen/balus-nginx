@@ -1,8 +1,9 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.16)
 project(nginx)
 
 set(CMAKE_CXX_STANDARD 14)
 
+# nginx
 include_directories(objs)
 include_directories(src/core)
 include_directories(src/event)
@@ -12,194 +13,362 @@ include_directories(src/http/modules)
 include_directories(src/http/modules/perl)
 include_directories(src/http/v2)
 include_directories(src/mail)
+include_directories(src/misc)
 include_directories(src/os/unix)
 include_directories(src/stream)
-include_directories(/usr/local/opt/pcre/include)
-include_directories(/usr/local/opt/openssl/include)
-# lua module
-include_directories(3rd/lua-nginx-module/src/api)
+
+# lua nginx module
 include_directories(3rd/lua-nginx-module/src)
-include_directories(/usr/local/opt/openresty/luajit/include/luajit-2.1)
-# rtmp
+include_directories(3rd/lua-nginx-module/src/api)
+
+# rtmp module
 include_directories(3rd/nginx-rtmp-module)
-include_directories(3rd/nginx-rtmp-module/hls)
 include_directories(3rd/nginx-rtmp-module/dash)
+include_directories(3rd/nginx-rtmp-module/hls)
+
 # njs
-include_directories(3rd/njs/src)
 include_directories(3rd/njs/build)
-# unit
-include_directories(3rd/unit/src)
-include_directories(3rd/unit/src/java)
-include_directories(3rd/unit/src/nodejs)
-include_directories(3rd/unit/src/perl)
-include_directories(3rd/unit/src/ruby)
+include_directories(3rd/njs/src)
+include_directories(3rd/njs/src/test)
+include_directories(3rd/quickjs)
 
 add_executable(nginx
-        objs/ngx_auto_config.h
-        objs/ngx_auto_headers.h
-        objs/ngx_modules.c
-        # my modules
-        3rd/my-modules/nginx-flv-module/ngx_http_flv_module.c
-        # 3rd/my-modules/nginx-ncp3-module/ngx_stream_socks5_module.c
-        3rd/my-modules/nginx-http-testvariable-module/ngx_http_testvariable_module.c
-        3rd/my-modules/nginx-testslab-module/ngx_http_testslab_module.c
-        3rd/my-modules/nginx-http-inotify-module/ngx_http_inotify_module.c
-
-        # lua module
+        3rd/lua-nginx-module/src/api/ngx_http_lua_api.h
+        3rd/lua-nginx-module/src/ddebug.h
         3rd/lua-nginx-module/src/ngx_http_lua_accessby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_accessby.h
         3rd/lua-nginx-module/src/ngx_http_lua_api.c
         3rd/lua-nginx-module/src/ngx_http_lua_args.c
+        3rd/lua-nginx-module/src/ngx_http_lua_args.h
         3rd/lua-nginx-module/src/ngx_http_lua_balancer.c
+        3rd/lua-nginx-module/src/ngx_http_lua_balancer.h
         3rd/lua-nginx-module/src/ngx_http_lua_bodyfilterby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_bodyfilterby.h
         3rd/lua-nginx-module/src/ngx_http_lua_cache.c
+        3rd/lua-nginx-module/src/ngx_http_lua_cache.h
         3rd/lua-nginx-module/src/ngx_http_lua_capturefilter.c
+        3rd/lua-nginx-module/src/ngx_http_lua_capturefilter.h
         3rd/lua-nginx-module/src/ngx_http_lua_clfactory.c
+        3rd/lua-nginx-module/src/ngx_http_lua_clfactory.h
+        3rd/lua-nginx-module/src/ngx_http_lua_common.h
         3rd/lua-nginx-module/src/ngx_http_lua_config.c
+        3rd/lua-nginx-module/src/ngx_http_lua_config.h
         3rd/lua-nginx-module/src/ngx_http_lua_consts.c
+        3rd/lua-nginx-module/src/ngx_http_lua_consts.h
         3rd/lua-nginx-module/src/ngx_http_lua_contentby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_contentby.h
         3rd/lua-nginx-module/src/ngx_http_lua_control.c
+        3rd/lua-nginx-module/src/ngx_http_lua_control.h
         3rd/lua-nginx-module/src/ngx_http_lua_coroutine.c
+        3rd/lua-nginx-module/src/ngx_http_lua_coroutine.h
         3rd/lua-nginx-module/src/ngx_http_lua_ctx.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ctx.h
         3rd/lua-nginx-module/src/ngx_http_lua_directive.c
+        3rd/lua-nginx-module/src/ngx_http_lua_directive.h
         3rd/lua-nginx-module/src/ngx_http_lua_exception.c
+        3rd/lua-nginx-module/src/ngx_http_lua_exception.h
         3rd/lua-nginx-module/src/ngx_http_lua_headerfilterby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headerfilterby.h
         3rd/lua-nginx-module/src/ngx_http_lua_headers.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headers.h
         3rd/lua-nginx-module/src/ngx_http_lua_headers_in.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headers_in.h
         3rd/lua-nginx-module/src/ngx_http_lua_headers_out.c
+        3rd/lua-nginx-module/src/ngx_http_lua_headers_out.h
         3rd/lua-nginx-module/src/ngx_http_lua_initby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_initby.h
         3rd/lua-nginx-module/src/ngx_http_lua_initworkerby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_initworkerby.h
         3rd/lua-nginx-module/src/ngx_http_lua_input_filters.c
+        3rd/lua-nginx-module/src/ngx_http_lua_input_filters.h
         3rd/lua-nginx-module/src/ngx_http_lua_lex.c
+        3rd/lua-nginx-module/src/ngx_http_lua_lex.h
         3rd/lua-nginx-module/src/ngx_http_lua_log.c
+        3rd/lua-nginx-module/src/ngx_http_lua_log.h
         3rd/lua-nginx-module/src/ngx_http_lua_log_ringbuf.c
+        3rd/lua-nginx-module/src/ngx_http_lua_log_ringbuf.h
         3rd/lua-nginx-module/src/ngx_http_lua_logby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_logby.h
         3rd/lua-nginx-module/src/ngx_http_lua_misc.c
+        3rd/lua-nginx-module/src/ngx_http_lua_misc.h
         3rd/lua-nginx-module/src/ngx_http_lua_module.c
         3rd/lua-nginx-module/src/ngx_http_lua_ndk.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ndk.h
         3rd/lua-nginx-module/src/ngx_http_lua_output.c
+        3rd/lua-nginx-module/src/ngx_http_lua_output.h
         3rd/lua-nginx-module/src/ngx_http_lua_pcrefix.c
+        3rd/lua-nginx-module/src/ngx_http_lua_pcrefix.h
         3rd/lua-nginx-module/src/ngx_http_lua_phase.c
         3rd/lua-nginx-module/src/ngx_http_lua_pipe.c
+        3rd/lua-nginx-module/src/ngx_http_lua_pipe.h
+        3rd/lua-nginx-module/src/ngx_http_lua_probe.h
         3rd/lua-nginx-module/src/ngx_http_lua_regex.c
         3rd/lua-nginx-module/src/ngx_http_lua_req_body.c
+        3rd/lua-nginx-module/src/ngx_http_lua_req_body.h
+        3rd/lua-nginx-module/src/ngx_http_lua_req_method.c
         3rd/lua-nginx-module/src/ngx_http_lua_rewriteby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_rewriteby.h
         3rd/lua-nginx-module/src/ngx_http_lua_script.c
+        3rd/lua-nginx-module/src/ngx_http_lua_script.h
         3rd/lua-nginx-module/src/ngx_http_lua_semaphore.c
+        3rd/lua-nginx-module/src/ngx_http_lua_semaphore.h
         3rd/lua-nginx-module/src/ngx_http_lua_setby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_setby.h
+        3rd/lua-nginx-module/src/ngx_http_lua_shdict.c
+        3rd/lua-nginx-module/src/ngx_http_lua_shdict.h
         3rd/lua-nginx-module/src/ngx_http_lua_sleep.c
+        3rd/lua-nginx-module/src/ngx_http_lua_sleep.h
         3rd/lua-nginx-module/src/ngx_http_lua_socket_tcp.c
+        3rd/lua-nginx-module/src/ngx_http_lua_socket_tcp.h
         3rd/lua-nginx-module/src/ngx_http_lua_socket_udp.c
+        3rd/lua-nginx-module/src/ngx_http_lua_socket_udp.h
         3rd/lua-nginx-module/src/ngx_http_lua_ssl.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl.h
         3rd/lua-nginx-module/src/ngx_http_lua_ssl_certby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_certby.h
         3rd/lua-nginx-module/src/ngx_http_lua_ssl_ocsp.c
         3rd/lua-nginx-module/src/ngx_http_lua_ssl_session_fetchby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_session_fetchby.h
         3rd/lua-nginx-module/src/ngx_http_lua_ssl_session_storeby.c
+        3rd/lua-nginx-module/src/ngx_http_lua_ssl_session_storeby.h
         3rd/lua-nginx-module/src/ngx_http_lua_string.c
+        3rd/lua-nginx-module/src/ngx_http_lua_string.h
         3rd/lua-nginx-module/src/ngx_http_lua_subrequest.c
+        3rd/lua-nginx-module/src/ngx_http_lua_subrequest.h
         3rd/lua-nginx-module/src/ngx_http_lua_time.c
         3rd/lua-nginx-module/src/ngx_http_lua_timer.c
+        3rd/lua-nginx-module/src/ngx_http_lua_timer.h
         3rd/lua-nginx-module/src/ngx_http_lua_uri.c
+        3rd/lua-nginx-module/src/ngx_http_lua_uri.h
         3rd/lua-nginx-module/src/ngx_http_lua_uthread.c
+        3rd/lua-nginx-module/src/ngx_http_lua_uthread.h
         3rd/lua-nginx-module/src/ngx_http_lua_util.c
+        3rd/lua-nginx-module/src/ngx_http_lua_util.h
         3rd/lua-nginx-module/src/ngx_http_lua_variable.c
         3rd/lua-nginx-module/src/ngx_http_lua_worker.c
+        3rd/lua-nginx-module/t/data/fake-delayed-load-module/ngx_http_lua_fake_delayed_load_module.c
+        3rd/lua-nginx-module/t/data/fake-module/ngx_http_fake_module.c
+        3rd/lua-nginx-module/t/data/fake-shm-module/ngx_http_lua_fake_shm_module.c
 
-        # rtmp module
-        3rd/nginx-rtmp-module/ngx_rtmp_play_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_mp4_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_shared.c
+        3rd/my-modules/nginx-flv-module/ngx_http_flv_module.c
+        3rd/my-modules/nginx-http-inotify-module/ngx_http_inotify_module.c
+        3rd/my-modules/nginx-http-testvariable-module/ngx_http_testvariable_module.c
+        3rd/my-modules/nginx-testslab-module/ngx_http_testslab_module.c
+
+        3rd/nginx-rtmp-module/dash/ngx_rtmp_dash_module.c
+        3rd/nginx-rtmp-module/dash/ngx_rtmp_mp4.c
+        3rd/nginx-rtmp-module/dash/ngx_rtmp_mp4.h
+        3rd/nginx-rtmp-module/hls/ngx_rtmp_hls_module.c
+        3rd/nginx-rtmp-module/hls/ngx_rtmp_mpegts.c
+        3rd/nginx-rtmp-module/hls/ngx_rtmp_mpegts.h
+        3rd/nginx-rtmp-module/ngx_rtmp.c
+        3rd/nginx-rtmp-module/ngx_rtmp.h
         3rd/nginx-rtmp-module/ngx_rtmp_access_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_auto_push_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_codec_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_live_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_exec_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_record_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_control_module.c
         3rd/nginx-rtmp-module/ngx_rtmp_amf.c
-        3rd/nginx-rtmp-module/ngx_rtmp_core_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_amf.h
+        3rd/nginx-rtmp-module/ngx_rtmp_auto_push_module.c
         3rd/nginx-rtmp-module/ngx_rtmp_bandwidth.c
-        3rd/nginx-rtmp-module/ngx_rtmp_receive.c
+        3rd/nginx-rtmp-module/ngx_rtmp_bandwidth.h
         3rd/nginx-rtmp-module/ngx_rtmp_bitop.c
-        3rd/nginx-rtmp-module/ngx_rtmp_relay_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_bitop.h
+        3rd/nginx-rtmp-module/ngx_rtmp_cmd_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_cmd_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_codec_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_codec_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_control_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_core_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_eval.c
+        3rd/nginx-rtmp-module/ngx_rtmp_eval.h
+        3rd/nginx-rtmp-module/ngx_rtmp_exec_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_flv_module.c
         3rd/nginx-rtmp-module/ngx_rtmp_handler.c
         3rd/nginx-rtmp-module/ngx_rtmp_handshake.c
-        3rd/nginx-rtmp-module/ngx_rtmp_eval.c
-        3rd/nginx-rtmp-module/ngx_rtmp_log_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_send.c
-        3rd/nginx-rtmp-module/ngx_rtmp_proxy_protocol.c
-        3rd/nginx-rtmp-module/ngx_rtmp_limit_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_netcall_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_cmd_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_stat_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp_notify_module.c
         3rd/nginx-rtmp-module/ngx_rtmp_init.c
-        3rd/nginx-rtmp-module/ngx_rtmp_flv_module.c
-        3rd/nginx-rtmp-module/ngx_rtmp.c
-        3rd/nginx-rtmp-module/hls/ngx_rtmp_mpegts.c
-        3rd/nginx-rtmp-module/hls/ngx_rtmp_hls_module.c
-        3rd/nginx-rtmp-module/dash/ngx_rtmp_mp4.c
-        3rd/nginx-rtmp-module/dash/ngx_rtmp_dash_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_limit_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_live_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_live_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_log_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_mp4_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_netcall_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_netcall_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_notify_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_play_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_play_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_proxy_protocol.c
+        3rd/nginx-rtmp-module/ngx_rtmp_proxy_protocol.h
+        3rd/nginx-rtmp-module/ngx_rtmp_receive.c
+        3rd/nginx-rtmp-module/ngx_rtmp_record_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_record_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_relay_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_relay_module.h
+        3rd/nginx-rtmp-module/ngx_rtmp_send.c
+        3rd/nginx-rtmp-module/ngx_rtmp_shared.c
+        3rd/nginx-rtmp-module/ngx_rtmp_stat_module.c
+        3rd/nginx-rtmp-module/ngx_rtmp_streams.h
+        3rd/nginx-rtmp-module/ngx_rtmp_version.h
 
-        # njs
+        3rd/njs/build/njs_auto_config.h
         3rd/njs/nginx/ngx_http_js_module.c
         3rd/njs/nginx/ngx_stream_js_module.c
+        3rd/njs/src/test/lvlhsh_unit_test.c
+        3rd/njs/src/test/njs_benchmark.c
+        3rd/njs/src/test/njs_externals_test.c
+        3rd/njs/src/test/njs_externals_test.h
+        3rd/njs/src/test/njs_interactive_test.c
+        3rd/njs/src/test/njs_unit_test.c
+        3rd/njs/src/test/random_unit_test.c
+        3rd/njs/src/test/rbtree_unit_test.c
+        3rd/njs/src/test/utf8_unit_test.c
+        3rd/njs/src/njs.h
         3rd/njs/src/njs_arr.c
+        3rd/njs/src/njs_arr.h
         3rd/njs/src/njs_array.c
+        3rd/njs/src/njs_array.h
         3rd/njs/src/njs_array_buffer.c
+        3rd/njs/src/njs_array_buffer.h
         3rd/njs/src/njs_boolean.c
+        3rd/njs/src/njs_boolean.h
+        3rd/njs/src/njs_builtin.c
         3rd/njs/src/njs_chb.c
+        3rd/njs/src/njs_chb.h
+        3rd/njs/src/njs_clang.h
         3rd/njs/src/njs_crypto.c
+        3rd/njs/src/njs_crypto.h
         3rd/njs/src/njs_date.c
+        3rd/njs/src/njs_date.h
         3rd/njs/src/njs_disassembler.c
+        3rd/njs/src/njs_diyfp.c
+        3rd/njs/src/njs_diyfp.h
         3rd/njs/src/njs_djb_hash.c
+        3rd/njs/src/njs_djb_hash.h
         3rd/njs/src/njs_dtoa.c
+        3rd/njs/src/njs_dtoa.h
         3rd/njs/src/njs_dtoa_fixed.c
+        3rd/njs/src/njs_dtoa_fixed.h
         3rd/njs/src/njs_error.c
+        3rd/njs/src/njs_error.h
         3rd/njs/src/njs_event.c
+        3rd/njs/src/njs_event.h
         3rd/njs/src/njs_extern.c
         3rd/njs/src/njs_file.c
+        3rd/njs/src/njs_file.h
         3rd/njs/src/njs_fs.c
+        3rd/njs/src/njs_fs.h
         3rd/njs/src/njs_function.c
+        3rd/njs/src/njs_function.h
         3rd/njs/src/njs_generator.c
+        3rd/njs/src/njs_generator.h
         3rd/njs/src/njs_json.c
+        3rd/njs/src/njs_json.h
         3rd/njs/src/njs_lexer.c
+        3rd/njs/src/njs_lexer.h
         3rd/njs/src/njs_lexer_keyword.c
+        3rd/njs/src/njs_lexer_tables.h
         3rd/njs/src/njs_lvlhsh.c
+        3rd/njs/src/njs_lvlhsh.h
+        3rd/njs/src/njs_main.h
         3rd/njs/src/njs_malloc.c
+        3rd/njs/src/njs_malloc.h
         3rd/njs/src/njs_math.c
+        3rd/njs/src/njs_math.h
         3rd/njs/src/njs_md5.c
+        3rd/njs/src/njs_md5.h
         3rd/njs/src/njs_module.c
+        3rd/njs/src/njs_module.h
         3rd/njs/src/njs_mp.c
+        3rd/njs/src/njs_mp.h
         3rd/njs/src/njs_murmur_hash.c
+        3rd/njs/src/njs_murmur_hash.h
         3rd/njs/src/njs_number.c
+        3rd/njs/src/njs_number.h
         3rd/njs/src/njs_object.c
+        3rd/njs/src/njs_object.h
+        3rd/njs/src/njs_object_hash.h
         3rd/njs/src/njs_object_prop.c
         3rd/njs/src/njs_parser.c
+        3rd/njs/src/njs_parser.h
         3rd/njs/src/njs_parser_expression.c
         3rd/njs/src/njs_parser_terminal.c
         3rd/njs/src/njs_pcre.c
+        3rd/njs/src/njs_pcre.h
         3rd/njs/src/njs_promise.c
+        3rd/njs/src/njs_promise.h
         3rd/njs/src/njs_queue.c
+        3rd/njs/src/njs_queue.h
         3rd/njs/src/njs_random.c
+        3rd/njs/src/njs_random.h
         3rd/njs/src/njs_rbtree.c
+        3rd/njs/src/njs_rbtree.h
+        3rd/njs/src/njs_regex.h
         3rd/njs/src/njs_regexp.c
+        3rd/njs/src/njs_regexp.h
+        3rd/njs/src/njs_regexp_pattern.h
         3rd/njs/src/njs_sha1.c
+        3rd/njs/src/njs_sha1.h
         3rd/njs/src/njs_sha2.c
+        3rd/njs/src/njs_sha2.h
         3rd/njs/src/njs_shell.c
         3rd/njs/src/njs_sprintf.c
+        3rd/njs/src/njs_sprintf.h
+        3rd/njs/src/njs_str.h
         3rd/njs/src/njs_string.c
+        3rd/njs/src/njs_string.h
         3rd/njs/src/njs_strtod.c
+        3rd/njs/src/njs_strtod.h
         3rd/njs/src/njs_symbol.c
+        3rd/njs/src/njs_symbol.h
         3rd/njs/src/njs_time.c
+        3rd/njs/src/njs_time.h
+        3rd/njs/src/njs_timer.c
+        3rd/njs/src/njs_timer.h
         3rd/njs/src/njs_trace.c
+        3rd/njs/src/njs_trace.h
         3rd/njs/src/njs_typed_array.c
+        3rd/njs/src/njs_typed_array.h
+        3rd/njs/src/njs_types.h
+        3rd/njs/src/njs_unicode_lower_case.h
+        3rd/njs/src/njs_unicode_upper_case.h
+        3rd/njs/src/njs_unix.h
         3rd/njs/src/njs_utf8.c
+        3rd/njs/src/njs_utf8.h
         3rd/njs/src/njs_value.c
+        3rd/njs/src/njs_value.h
+        3rd/njs/src/njs_value_conversion.h
         3rd/njs/src/njs_variable.c
+        3rd/njs/src/njs_variable.h
         3rd/njs/src/njs_vm.c
+        3rd/njs/src/njs_vm.h
         3rd/njs/src/njs_vmcode.c
+        3rd/njs/src/njs_vmcode.h
 
-        # nginx core
+        3rd/quickjs/examples/fib.c
+        3rd/quickjs/examples/point.c
+        3rd/quickjs/tests/bjson.c
+        3rd/quickjs/cutils.c
+        3rd/quickjs/cutils.h
+        3rd/quickjs/jscompress.c
+        3rd/quickjs/libbf.c
+        3rd/quickjs/libbf.h
+        3rd/quickjs/libregexp-opcode.h
+        3rd/quickjs/libregexp.c
+        3rd/quickjs/libregexp.h
+        3rd/quickjs/libunicode-table.h
+        3rd/quickjs/libunicode.c
+        3rd/quickjs/libunicode.h
+        3rd/quickjs/list.h
+        3rd/quickjs/qjs.c
+        3rd/quickjs/qjsc.c
+        3rd/quickjs/quickjs-atom.h
+        3rd/quickjs/quickjs-libc.c
+        3rd/quickjs/quickjs-libc.h
+        3rd/quickjs/quickjs-opcode.h
+        3rd/quickjs/quickjs.c
+        3rd/quickjs/quickjs.h
+        3rd/quickjs/run-test262.c
+        3rd/quickjs/unicode_gen.c
+        3rd/quickjs/unicode_gen_def.h
+
+        objs/ngx_modules.c
         src/core/nginx.c
         src/core/ngx_array.c
         src/core/ngx_buf.c
@@ -351,7 +520,8 @@ add_executable(nginx
         src/mail/ngx_mail_smtp_handler.c
         src/mail/ngx_mail_smtp_module.c
         src/mail/ngx_mail_ssl_module.c
-        # nginx os-related
+        src/misc/ngx_cpp_test_module.cpp
+        src/misc/ngx_google_perftools_module.c
         src/os/unix/ngx_alloc.c
         src/os/unix/ngx_channel.c
         src/os/unix/ngx_daemon.c
@@ -378,9 +548,6 @@ add_executable(nginx
         src/os/unix/ngx_socket.c
         src/os/unix/ngx_solaris_init.c
         src/os/unix/ngx_solaris_sendfilev_chain.c
-        src/os/unix/ngx_sunpro_amd64.il
-        src/os/unix/ngx_sunpro_sparc64.il
-        src/os/unix/ngx_sunpro_x86.il
         src/os/unix/ngx_thread_cond.c
         src/os/unix/ngx_thread_id.c
         src/os/unix/ngx_thread_mutex.c
