@@ -10,15 +10,9 @@
 [submodule "3rd/nginx-http-flv-module"]
 	path = 3rd/nginx-http-flv-module
 	url = git@github.com:winshining/nginx-http-flv-module.git
-[submodule "3rd/nginx-push-stream-module"]
-	path = 3rd/nginx-push-stream-module
-	url = git@github.com:wandenberg/nginx-push-stream-module.git
 [submodule "3rd/my-modules"]
 	path = 3rd/my-modules
 	url = git@github.com:BalusChen/my-nginx-modules.git
-[submodule "3rd/unit"]
-	path = 3rd/unit
-	url = git@github.com:nginx/unit.git
 [submodule "3rd/quickjs"]
 	path = 3rd/quickjs
 	url = git@github.com:horhof/quickjs.git
