@@ -130,6 +130,9 @@ ngx_thread_pool_init(ngx_thread_pool_t *tp, ngx_log_t *log, ngx_pool_t *pool)
 
     tp->log = log;
 
+    /*
+     * NOTE: pthread_XXX 调用出错直接返回错误码，而不是 -1
+     */
     err = pthread_attr_init(&attr);
     if (err) {
         ngx_log_error(NGX_LOG_ALERT, log, err,
@@ -183,11 +186,29 @@ ngx_thread_pool_destroy(ngx_thread_pool_t *tp)
     for (n = 0; n < tp->threads; n++) {
         lock = 1;
 
+        /*
+         * NOTE: 往任务队列中每次塞一个 task，这类 task 是用来退出的，其 handler 为
+         *       ngx_thread_pool_exit_handler，其中主要执行了 pthread_exit 操作，
+         *       每次一个线程抢到了任务，就将 lock解锁，并执行该 handler 退出。下面主
+         *       线程主动让出 CPU，从而让线程池中的线程可以执行 task 退出。
+         *
+         */
+
         if (ngx_thread_task_post(tp, &task) != NGX_OK) {
             return;
         }
 
+        /*
+         * NOTE: 当 *lock == 0 时，说明这个 task 已经被某个线程给抢到了（不然 task 不
+         *       会执行），不论这个 task 现在是否已经执行完成（可能在 exit_handler 里
+         *       面执行完 *lock = 0 就被调度了），线程最终一定会把它执行完并退出的。这
+         *       里只需要保证 task 被抢到了
+         *
+         * TODO: 为什么需要有这个 lock，感觉不需要也是 ok 的啊，为什么要保证 task 被线
+         *       程抢到了？
+         */
         while (lock) {
+            // NOTE: 让当前线程主动让出 CPU
             ngx_sched_yield();
         }
 
@@ -230,6 +251,10 @@ ngx_thread_task_alloc(ngx_pool_t *pool, size_t size)
 ngx_int_t
 ngx_thread_task_post(ngx_thread_pool_t *tp, ngx_thread_task_t *task)
 {
+    /*
+     * NOTE: ngx_event_t 的 active 字段在线程池中的含义
+     *       表示该 task 已经在线程池中了，等待执行或者正在执行
+     */
     if (task->event.active) {
         ngx_log_error(NGX_LOG_ALERT, tp->log, 0,
                       "task #%ui already active", task->id);
@@ -240,6 +265,10 @@ ngx_thread_task_post(ngx_thread_pool_t *tp, ngx_thread_task_t *task)
         return NGX_ERROR;
     }
 
+    /*
+     * NOTE: 这里用了'等于'，是因为接下来要新增一个任务，如果目前是'等于'，
+     *       那么接下来就会超过了。
+     */
     if (tp->waiting >= tp->max_queue) {
         (void) ngx_thread_mutex_unlock(&tp->mtx, tp->log);
 
@@ -254,6 +283,14 @@ ngx_thread_task_post(ngx_thread_pool_t *tp, ngx_thread_task_t *task)
     task->id = ngx_thread_pool_task_id++;
     task->next = NULL;
 
+    /*
+     * NOTE: 此时 cond_signal 并不能真正唤醒线程池中的线程，因为这里还持有互斥量，
+     *       所以线程池中的线程没法获取到互斥量，所以虽然唤醒，却被阻塞在加锁的过程
+     *       中，而这也是正确的，因为此时还没有把新的任务加到任务队列上去。而后面将
+     *       任务加到队列中去后，才释放互斥量，此时线程池中的线程就可以获取任务执行。
+     *
+     * QUESTION: 为什么不先将新的任务放到任务队列上，然后再解锁、cond_signal？
+     */
     if (ngx_thread_cond_signal(&tp->cond, tp->log) != NGX_OK) {
         (void) ngx_thread_mutex_unlock(&tp->mtx, tp->log);
         return NGX_ERROR;
@@ -262,6 +299,7 @@ ngx_thread_task_post(ngx_thread_pool_t *tp, ngx_thread_task_t *task)
     *tp->queue.last = task;
     tp->queue.last = &task->next;
 
+    // NOTE: waiting 是指在任务队列中等待被执行的任务的个数
     tp->waiting++;
 
     (void) ngx_thread_mutex_unlock(&tp->mtx, tp->log);
@@ -304,6 +342,13 @@ ngx_thread_pool_cycle(void *data)
     }
 
     for ( ;; ) {
+
+        /*
+         * NOTE: 从任务队列中取出头部任务开始执行，由于有多个线程并发取任务，
+         *       所以需要锁来保护，如果当前任务队列为空的话，则需要阻塞在条件
+         *       变量上。
+         */
+
         if (ngx_thread_mutex_lock(&tp->mtx, tp->log) != NGX_OK) {
             return NULL;
         }
@@ -311,6 +356,10 @@ ngx_thread_pool_cycle(void *data)
         /* the number may become negative */
         tp->waiting--;
 
+        /*
+         * NOTE: APUE 中有提到为什么这里不用 if 而用 while，
+         *       主要是为了处理虚假唤醒的情况
+         */
         while (tp->queue.first == NULL) {
             if (ngx_thread_cond_wait(&tp->cond, &tp->mtx, tp->log)
                 != NGX_OK)
@@ -352,10 +401,23 @@ ngx_thread_pool_cycle(void *data)
         *ngx_thread_pool_done.last = task;
         ngx_thread_pool_done.last = &task->next;
 
+        /*
+         * NOTE: 这里的 memory_barrier 是为了让
+         *       下面的 ngx_unlock 只是简单的一个宏：*(lock) = 0，所以可能会被编译器
+         *       的指令重排优化所影响，导致 ngx_spinlock 之后就立刻执行 ngx_unlock，
+         *       那么此处和 ngx_thread_pool_handler 中 ngx_thread_pool_done 相关
+         *       的操作就会相互影响。
+         *
+         * REF: http://mailman.nginx.org/pipermail/nginx-devel/2016-April/008160.html
+         */
+
         ngx_memory_barrier();
 
         ngx_unlock(&ngx_thread_pool_done_lock);
 
+        /*
+         * NOTE: 线程执行完任务后，得通知主线程
+         */
         (void) ngx_notify(ngx_thread_pool_handler);
     }
 }
@@ -371,6 +433,9 @@ ngx_thread_pool_handler(ngx_event_t *ev)
 
     ngx_spinlock(&ngx_thread_pool_done_lock, 1, 2048);
 
+    /*
+     * NOTE: 清空整个 done 队列
+     */
     task = ngx_thread_pool_done.first;
     ngx_thread_pool_done.first = NULL;
     ngx_thread_pool_done.last = &ngx_thread_pool_done.first;
@@ -383,6 +448,13 @@ ngx_thread_pool_handler(ngx_event_t *ev)
         ngx_log_debug1(NGX_LOG_DEBUG_CORE, ev->log, 0,
                        "run completion handler for task #%ui", task->id);
 
+        /*
+         * NOTE: 这个函数里面有两个 ngx_event_t 事件。
+         *       函数参数是 eventfd 的 read 事件，它不包含业务逻辑。
+         *       每个 task 都有一个 event 成员，这个成员包含主线程的业务逻辑。
+         *
+         * QUESTION: 既然 eventfd 的 read 事件没有用，为什么要作为本函数的参数？
+         */
         event = &task->event;
         task = task->next;
 
@@ -427,6 +499,10 @@ ngx_thread_pool_init_conf(ngx_cycle_t *cycle, void *conf)
 
     for (i = 0; i < tcf->pools.nelts; i++) {
 
+        /*
+         * QUESTION: 为什么需要检查 threads 字段？不是每条 thread_pool 指令
+         *           都必须带上 threads=n 参数么？
+         */
         if (tpp[i]->threads) {
             continue;
         }
@@ -451,7 +527,9 @@ ngx_thread_pool_init_conf(ngx_cycle_t *cycle, void *conf)
     return NGX_CONF_OK;
 }
 
-
+/*
+ * syntax: thread_pool pool_name threads=32 [max_queue=65536]
+ */
 static char *
 ngx_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -461,6 +539,7 @@ ngx_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    // NOTE: 如果该名字已经存在，那么返回对应的线程池
     tp = ngx_thread_pool_add(cf, &value[1]);
 
     if (tp == NULL) {
@@ -504,6 +583,7 @@ ngx_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    // NOTE: 每条 thread_pool 指令都必须带上 threads=n 参数
     if (tp->threads == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "\"%V\" must have \"threads\" parameter",
@@ -586,6 +666,9 @@ ngx_thread_pool_init_worker(ngx_cycle_t *cycle)
     ngx_thread_pool_t       **tpp;
     ngx_thread_pool_conf_t   *tcf;
 
+    /*
+     * NOTE: 只在 worker 中创建线程（如果是 single 模式，也创建线程）
+     */
     if (ngx_process != NGX_PROCESS_WORKER
         && ngx_process != NGX_PROCESS_SINGLE)
     {
