@@ -2296,8 +2296,8 @@ ngx_http_gzip_quantity(u_char *p, u_char *last)
 
 ngx_int_t
 ngx_http_subrequest(ngx_http_request_t *r,
-    ngx_str_t *uri, ngx_str_t *args, ngx_http_request_t **psr,
-    ngx_http_post_subrequest_t *ps, ngx_uint_t flags)
+    ngx_str_t *uri, ngx_str_t *args, ngx_http_request_t **srp,
+    ngx_http_post_subrequest_t *psr, ngx_uint_t flags)
 {
     ngx_time_t                    *tp;
     ngx_connection_t              *c;
@@ -2401,7 +2401,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     sr->main = r->main;
     sr->parent = r;
-    sr->post_subrequest = ps;
+    sr->post_subrequest = psr;
     sr->read_event_handler = ngx_http_request_empty_handler;
     sr->write_event_handler = ngx_http_handler;
 
@@ -2451,7 +2451,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     r->main->count++;
 
-    *psr = sr;
+    *srp = sr;
 
     if (flags & NGX_HTTP_SUBREQUEST_CLONE) {
         sr->method = r->method;
