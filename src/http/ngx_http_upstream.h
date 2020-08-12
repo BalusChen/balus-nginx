@@ -339,6 +339,7 @@ struct ngx_http_upstream_s {
 
     ngx_chain_t                     *request_bufs;
 
+    // NOTE: 定义了向 client 发送响应的方式
     ngx_output_chain_ctx_t           output;
     ngx_chain_writer_ctx_t           writer;
 
@@ -391,6 +392,9 @@ struct ngx_http_upstream_s {
     ngx_str_t                        ssl_name;
 #endif
 
+    /*
+     * NOTE: 目前仅用于标识是否需要清理资源，相当于一个标志位，实际上并没有调用其指向的方法
+     */
     ngx_http_cleanup_pt             *cleanup;
 
     unsigned                         store:1;

@@ -526,6 +526,11 @@ ngx_http_upstream_init(ngx_http_request_t *r)
     }
 #endif
 
+    /*
+     * NOTE: 这里的 c 指的是 nginx 和 client 的连接，如果和下游的读事件在定时器中，那么
+     *       将其移除，这是因为一旦启动 upstream机制，就不应该对 client 的读操作带有超时
+     *       时间的处理，请求的主要触发事件将以与 upstream 的连接为主。
+     */
     if (c->read->timer_set) {
         ngx_del_timer(c->read);
     }
@@ -607,13 +612,28 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
 
 #endif
 
+    /*
+     * NOTE: store 标志位表示是否需要将上游的响应存放至临时文件中
+     */
     u->store = u->conf->store;
 
+    /*
+     * QUESTION: 为什么在 !store && !post_action 的情况下才检查和 upstream 的连接情况呢？
+     */
     if (!u->store && !r->post_action && !u->conf->ignore_client_abort) {
+
+        /*
+         * NOTE: 设置这两个 handler 为 rd_check 和 wr_check，这样在 epoll 检测到
+         *       client 的 read/write 事件之后，就可以检查 nginx 和 client 的连接
+         *       是否正常了
+         */
         r->read_event_handler = ngx_http_upstream_rd_check_broken_connection;
         r->write_event_handler = ngx_http_upstream_wr_check_broken_connection;
     }
 
+    /*
+     * NOTE:
+     */
     if (r->request_body) {
         u->request_bufs = r->request_body->bufs;
     }
@@ -623,6 +643,9 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         return;
     }
 
+    /*
+     * NOTE: u->conf->local 表示 nginx 连接 upstream 时使用的本地地址
+     */
     if (ngx_http_upstream_set_local(r, u, u->conf->local) != NGX_OK) {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return;
@@ -667,6 +690,10 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         ngx_memzero(u->state, sizeof(ngx_http_upstream_state_t));
     }
 
+    /*
+     * NOTE: 添加一个 cleanup 到 request 的 cleanup 链表上去，这样 request 结束后一定
+     *       会调用该 cleanup 以关闭和 upstream 的连接、请求。
+     */
     cln = ngx_http_cleanup_add(r, 0);
     if (cln == NULL) {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
@@ -789,7 +816,9 @@ found:
     u->ssl_name = uscf->host;
 #endif
 
-    // balus: peer.init 是 ngx_http_round_robin.c 中的  ngx_http_upstream_init_round_robin_peer
+    /*
+     * NOTE: peer.init 负载均衡算法，默认为  ngx_http_upstream_init_round_robin_peer
+     */
     if (uscf->peer.init(r, uscf) != NGX_OK) {
         ngx_http_upstream_finalize_request(r, u,
                                            NGX_HTTP_INTERNAL_SERVER_ERROR);
@@ -1508,6 +1537,10 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
     r->connection->log->action = "connecting to upstream";
 
     if (u->state && u->state->response_time == (ngx_msec_t) -1) {
+        /*
+         * QUESTION: response_time 不是表示 upstream 响应的时间么？
+         *           但是现在才刚刚向 upstream 发起连接啊！
+         */
         u->state->response_time = ngx_current_msec - u->start_time;
     }
 
@@ -1558,6 +1591,11 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     c->data = r;
 
+    /*
+     *  NOTE: c->write->handler 和 c->read->handler 都是 ngx_http_upstream_handler
+     *        在这个函数里面根据发生的事件，调用了 u->write_event_handler 和 u->read_event_handler，
+     *        并且调用了 ngx_http_run_posted_requests
+     */
     c->write->handler = ngx_http_upstream_handler;
     c->read->handler = ngx_http_upstream_handler;
 
@@ -2009,6 +2047,7 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
         u->state->connect_time = ngx_current_msec - u->start_time;
     }
 
+    // NOTE: test_connect 主要以 SO_ERROR 调用 getsockopt
     if (!u->request_sent && ngx_http_upstream_test_connect(c) != NGX_OK) {
         ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
         return;
@@ -2029,10 +2068,21 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
     }
 
     if (rc == NGX_AGAIN) {
+
+        /*
+         * NOTE: 如果发送 request body 返回 NGX_AGAIN，说明 body 并未发送完全，
+         *
+         *       request_body_blocked != 0，说明最后一个 ouput_chain 返回 NGX_AGAIN
+         *       c->write->ready != 1，说明写事件还没有准备好？
+         *       （这两个不是一样的么？）
+         *       此时把写事件加入到定时器中去，否则的话，
+         *
+         */
         if (!c->write->ready || u->request_body_blocked) {
             ngx_add_timer(c->write, u->conf->send_timeout);
 
         } else if (c->write->timer_set) {
+            // QUESTION: 为什么要从定时器中删除写事件？
             ngx_del_timer(c->write);
         }
 
@@ -2042,6 +2092,13 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
             return;
         }
 
+        /*
+         * NOTE: 在 grpc 中，一个请求发不出去可能是因为流控（flow control），更加严重
+         *       的是，对于有的 backend，它必须接收到我们已经发送的所有的数据，才允许我
+         *       们继续发送数据，对于这样的 backend，我们得清除 NOPUSH 标志位，才能保
+         *       证我们发送的数据的确被发送到 backend（而不是停留在 kernel buffer 中）
+         *       REF: http://mailman.nginx.org/pipermail/nginx-devel/2018-July/011234.html
+         */
         if (c->write->ready && c->tcp_nopush == NGX_TCP_NOPUSH_SET) {
             if (ngx_tcp_push(c->fd) == -1) {
                 ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
@@ -2118,6 +2175,13 @@ ngx_http_upstream_send_request_body(ngx_http_request_t *r,
 
         /* buffered request body */
 
+        /*
+         * NOTE: request_sent 表示这是不是第一次调用 ngx_output_chain。
+         *       第一次调用 ngx_output_chain 时，需要把需要发送的 chain 作为其第二个
+         *       参数发送出去，但是由于非阻塞的原因，数据可能没法一次性全部发送出去，此时
+         *       会把未发送的数据保存在第一个参数中，后面再次调用的话第二个参数直接传一个
+         *       NULL 就可以了
+         */
         if (!u->request_sent) {
             u->request_sent = 1;
             out = u->request_bufs;
@@ -2128,6 +2192,10 @@ ngx_http_upstream_send_request_body(ngx_http_request_t *r,
 
         rc = ngx_output_chain(&u->output, out);
 
+        /*
+         * QUESTION: 只有在 rc == NGX_AGAIN 的情况下才会设置 request_body_blocked = 1，
+         *           那在外部直接判断 rc 不就好了，为什么还需要这个 flag 呢？
+         */
         if (rc == NGX_AGAIN) {
             u->request_body_blocked = 1;
 
@@ -2139,6 +2207,10 @@ ngx_http_upstream_send_request_body(ngx_http_request_t *r,
     }
 
     if (!u->request_sent) {
+
+        /*
+         * NOTE: 第一次调用 ngx_output_chain，所以需要设置 request_sent
+         */
         u->request_sent = 1;
         out = u->request_bufs;
 
@@ -2248,6 +2320,12 @@ ngx_http_upstream_send_request_handler(ngx_http_request_t *r,
 #endif
 
     if (u->header_sent && !u->conf->preserve_output) {
+        /*
+         * NOTE: header_sent 表示已经把 upstream 的响应包头转发给 client 了。
+         *       header_sent == 1 一定是在已经解析完了所有的 upstream 响应头，...
+         *
+         * TODO: 为什么要设置 write_event_handler 为 dummy ？
+         */
         u->write_event_handler = ngx_http_upstream_dummy_handler;
 
         (void) ngx_handle_write_event(c->write, 0);

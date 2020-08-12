@@ -808,11 +808,18 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
     if (err) {
         if (err == NGX_EINTR) {
 
+            /*
+             * NOTE: 如果设置了 timer_resolution，那么 event 模块会在 init process
+             *       的时候使用 setitimer 设置定时器，每隔 timer_resultion 就发送
+             *       alarm 信号，nginx 捕捉该信号，在 signal handler 中将 ngx_event_timer_alarm
+             *       设置为 1，表示需要更新时间缓存；所以这个不算是错误
+             */
             if (ngx_event_timer_alarm) {
                 ngx_event_timer_alarm = 0;
                 return NGX_OK;
             }
 
+            // NOTE: EINTR 本身其实也不是错误
             level = NGX_LOG_INFO;
 
         } else {
@@ -859,6 +866,9 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
                        "epoll: fd:%d ev:%04XD d:%p",
                        c->fd, revents, event_list[i].data.ptr);
 
+        /*
+         * NOTE: 如果在该 fd 上出现错误（或者对端关闭的话），此时为了
+         */
         if (revents & (EPOLLERR|EPOLLHUP)) {
             ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                            "epoll_wait() error on fd:%d ev:%04XD",

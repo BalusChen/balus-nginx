@@ -2049,6 +2049,10 @@ ngx_http_process_request(ngx_http_request_t *r)
     r->stat_writing = 1;
 #endif
 
+    /*
+     * QUESTION: 为什么 c->read->handler 和 r->read_event_handler 不同？那选择那个
+     *           呢？
+     */
     c->read->handler = ngx_http_request_handler;
     c->write->handler = ngx_http_request_handler;
     r->read_event_handler = ngx_http_block_reading;
@@ -2410,6 +2414,9 @@ ngx_http_post_request(ngx_http_request_t *r, ngx_http_posted_request_t *pr)
 }
 
 
+/*
+ * REF: https://ialloc.org/blog/ngx-notes-prerequisite/#ngx-http-finalize-request
+ */
 void
 ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 {
@@ -2423,6 +2430,10 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
                    "http finalize request: %i, \"%V?%V\" a:%d, c:%d",
                    rc, &r->uri, &r->args, r == c->data, r->main->count);
 
+    /*
+     * NOTE: NGX_DONE 表示本次请求动作已经完成，但是该请求上还有其他进行中的异步动作，
+     *       所以将其引用计数减一后直接返回。
+     */
     if (rc == NGX_DONE) {
         ngx_http_finalize_connection(r);
         return;
@@ -2432,6 +2443,10 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         c->error = 1;
     }
 
+    /*
+     * NOTE: NGX_DECLINED 表示 content-handler 无法处理该请求，那么交予 content phase
+     *       中的 handler 来处理（注意二者是不一样的）
+     */
     if (rc == NGX_DECLINED) {
         r->content_handler = NULL;
         r->write_event_handler = ngx_http_core_run_phases;
@@ -2439,6 +2454,9 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         return;
     }
 
+    /*
+     * NOTE: post_subrequest 是子请求结束时的回调方法
+     */
     if (r != r->main && r->post_subrequest) {
         rc = r->post_subrequest->handler(r, r->post_subrequest->data, rc);
     }
@@ -2483,9 +2501,14 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         return;
     }
 
+    /* ATTENTION: 处理子请求相关的逻辑 */
     if (r != r->main) {
         clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+        /*
+         * NOTE: 如果是后台子请求，此时 nginx 认为该请求已经完成，所以置 done 标志位为
+         *       1，而后调用 finalize_connection 将其占用的引用计数减去 1.
+         */
         if (r->background) {
             if (!r->logged) {
                 if (clcf->log_subrequest) {
@@ -2505,6 +2528,14 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
             return;
         }
 
+        /*
+         * NOTE: 该子请求并非后台子请求，而且其数据尚未发送完毕（即 c->buffered == 1），
+         *       或者该子请求创建的子请求还没有完成（r->postponed != NULL），那么将其
+         *       写事件的 handler 设置为 ngx_http_writer（通过 ngx_http_set_writer_handler
+         *       函数）。
+         *
+         * QUESTION: 这是为啥？
+         */
         if (r->buffered || r->postponed) {
 
             if (ngx_http_set_write_handler(r) != NGX_OK) {
@@ -2513,6 +2544,13 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 
             return;
         }
+
+        /*
+         * ATTENTION: 注意下面这段代码
+         *
+         * NOTE: 如果本子请求是当前活跃请求（CAR)，那么由于本请求已经完成了，所以将主请求
+         *       的引用计数减 1，并将当前请求的 done 标志置位。
+         */
 
         pr = r->parent;
 
@@ -2535,10 +2573,18 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 
             r->done = 1;
 
+            /*
+             * QUESTION: 如果 pr->postponed->request != r，那会不会有问题？r 已经完
+             *           成了，但是由于它不是 postponed 链表的首元素，导致链表头无法前
+             *           移。这个是否应该看做一种错误，进行 log？
+             */
             if (pr->postponed && pr->postponed->request == r) {
                 pr->postponed = pr->postponed->next;
             }
 
+            /*
+             * NOTE:
+             */
             c->data = pr;
 
         } else {
@@ -2554,6 +2600,13 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
             }
         }
 
+        /*
+         * NOTE: 这里把父请求再次添加到主请求的 posted_requests 链表上，从而让父请求可
+         *       以被再次调度执行。
+         *
+         * QUESTION: 1. 会不会出现一个请求在主请求的 posted_requests 链表上多次出现？
+         *           2. 为什么失败了 r->main->count 还要增 1？
+         */
         if (ngx_http_post_request(pr, NULL) != NGX_OK) {
             r->main->count++;
             ngx_http_terminate_request(r, 0);
@@ -2614,6 +2667,9 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 }
 
 
+/*
+ * NOTE:
+ */
 static void
 ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
 {
@@ -2653,6 +2709,9 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
             return;
         }
 
+        /*
+         * TODO: 这个强制转换我没有看懂。强制将 r->uri_start 转换为
+         */
         e = ngx_http_ephemeral(mr);
         mr->posted_requests = NULL;
         mr->write_event_handler = ngx_http_terminate_handler;

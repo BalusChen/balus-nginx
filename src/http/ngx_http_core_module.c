@@ -832,6 +832,10 @@ ngx_http_handler(ngx_http_request_t *r)
 
     } else {
         cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+        /*
+         * NOTE: SERVER_REWRITE 阶段，在将请求的 URI与 location 表达式匹配之前，修改
+         *       请求的 URI（即所谓的重定向）
+         */
         r->phase_handler = cmcf->phase_engine.server_rewrite_index;
     }
 
@@ -1036,6 +1040,9 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "post rewrite phase: %ui", r->phase_handler);
 
+    /*
+     * QUESTION: uri_changed 什么情况下会设置为 1 ？
+     */
     if (!r->uri_changed) {
         r->phase_handler++;
         return NGX_AGAIN;
@@ -1053,6 +1060,9 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
 
     r->uri_changes--;
 
+    /*
+     * NOTE: 如果
+     */
     if (r->uri_changes == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "rewrite or internal redirection cycle "
@@ -1077,6 +1087,9 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     ngx_int_t                  rc;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /*
+     * NOTE: 子请求无需再过 access phase
+     */
     if (r != r->main) {
         r->phase_handler = ph->next;
         return NGX_AGAIN;
@@ -1092,6 +1105,9 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
         return NGX_AGAIN;
     }
 
+    /*
+     * QUESTION: 这是为什么？
+     */
     if (rc == NGX_AGAIN || rc == NGX_DONE) {
         return NGX_OK;
     }
@@ -1118,6 +1134,11 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
         }
 
         if (rc == NGX_HTTP_FORBIDDEN || rc == NGX_HTTP_UNAUTHORIZED) {
+            /*
+             * NOTE: 如果前面的某个 handler 设置 access code 为 UNAUTHORIZED，那么
+             *       它就不应该被后续的 access code 覆盖，因为 UNAUTHORIZED 需要返回
+             *       一个 WWW-Authenticate 头部给客户端
+             */
             if (r->access_code != NGX_HTTP_UNAUTHORIZED) {
                 r->access_code = rc;
             }
@@ -2231,12 +2252,28 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_http_core_srv_conf_t      *cscf;
     ngx_http_postponed_request_t  *pr, *p;
 
+    /*
+     * NOTE: 在 nginx 中，main request 是由 client 发来的 HTTP 报文经 nginx 解析之
+     *       后产生的，而 subrequest 则是在 nginx 内部产生的（感觉俩都是内部产生的？）。
+     *       subrequest 自己还可以派生 sub-subrequest，这就形成了一棵树，nginx 对这
+     *       棵树的高度是有要求的，最高不能超过 NGX_HTTP_MAX_REQUESTS。每个 request
+     *       结构中都有一个 subrequests 字段，表示当前的请求在所属的请求树中的深度，如
+     *       果某个请求的 subrequests = 0，说明这棵树已经超出了最大高度，直接出错返回，
+     *       在本函数的后面可以看到，子请求成功创建之后，sr->subrequests = r->subrequests-1
+     *
+     * NOTE: 父子请求之间形成的请求关系树在决定响应数据的构造、发送顺序时很有用。
+     */
     if (r->subrequests == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "subrequests cycle while processing \"%V\"", uri);
         return NGX_ERROR;
     }
 
+    /*
+     * NOTE: nginx 不仅仅对数的高度有要求，还对请求树中请求的最大个数有要求，最大不得超
+     *       过 64535 个。
+     *       main request 是整个请求树的树根，其 count 字段用来表示该树中请求的个数。
+     */
     /*
      * 1000 is reserved for other purposes.
      */
@@ -2247,6 +2284,13 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    /*
+     * NOTE: 如果 parent request 的 subrequest_in_memory 置位了，那么说明这个父请求
+     *       也是一个 subrequest，并且它得到的响应体也要全部放在缓冲区中，那么新创建的
+     *       subrequest
+     *
+     * TODO: 这里还没有太搞懂
+     */
     if (r->subrequest_in_memory) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "nested in-memory subrequest \"%V\"", uri);
@@ -2263,6 +2307,9 @@ ngx_http_subrequest(ngx_http_request_t *r,
     c = r->connection;
     sr->connection = c;
 
+    /*
+     * NOTE: 创建了新的 subrequest，其 module context 就是全新的了
+     */
     sr->ctx = ngx_pcalloc(r->pool, sizeof(void *) * ngx_http_max_module);
     if (sr->ctx == NULL) {
         return NGX_ERROR;
@@ -2282,6 +2329,13 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    /*
+     * NOTE: 需要注意，子请求只能在同一个 server{...} 块下进行跳转，而不能跳转至其他的
+     *       server{...} 块下。这里讲 subrequest 的 main/srv/loc 都设置为 http_core_module
+     *       的 main/srv/loc_conf.
+     *
+     * QUESTION: cscf->ctx->loc_conf 不是保存的所有 HTTP 模块在当前 location 的
+     */
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
     sr->main_conf = cscf->ctx->main_conf;
     sr->srv_conf = cscf->ctx->srv_conf;
@@ -2301,6 +2355,10 @@ ngx_http_subrequest(ngx_http_request_t *r,
     sr->stream = r->stream;
 #endif
 
+    /*
+     * NOTE: subrequest 的请求方法，除非是设置了 CLONE 标志位，否则都是 GET，这样的好
+     *       处是，可以从 upstream 获取内容并缓存至本地。
+     */
     sr->method = NGX_HTTP_GET;
     sr->http_version = r->http_version;
 
@@ -2328,6 +2386,14 @@ ngx_http_subrequest(ngx_http_request_t *r,
     sr->main = r->main;
     sr->parent = r;
     sr->post_subrequest = ps;
+    /*
+     * NOTE: 默认产生的 subrequest 的 read_event_handler 是 dummy，因为 subrequest
+     *       不需要从从 client 读取数据（如果是 upstream 的话，还没有发送请求至 upstream，
+     *       所以也不用读），write_event_handler 是 ngx_http_handler，在这个函数中，
+     *       由于 subrequest 都带有 internal 标志位（在下面代码），所以默认从
+     *       SERVER_REWRITE 阶段开始执行（这个阶段在将请求的 URI 与 location 匹配之
+     *       前，修改请求的 URI，即重定向）
+     */
     sr->read_event_handler = ngx_http_request_empty_handler;
     sr->write_event_handler = ngx_http_handler;
 
@@ -2335,11 +2401,23 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     sr->log_handler = r->log_handler;
 
+    // QUESTION: filter_need_in_memory 的含义？
     if (sr->subrequest_in_memory) {
         sr->filter_need_in_memory = 1;
     }
 
     if (!sr->background) {
+
+        /*
+         * NOTE: 这一块需要好好理解
+         *       1. 带有 BACKGROUND 标志的 subrequest 不需要参加 response 的生产过程，
+         *          所以不需要加入"子请求关系树"。
+         *       2. c->data 存储的是 current-active-request(CAR)，如果父请求是 CAR
+         *          但是在此之前还没有创建过子请求，那么将本 subrequest 作为 CAR。这样
+         *          做是因为
+         *       3. 将本 subrequest 以 postponed_request 的形式挂载到父请求的 postponed
+         *          链表的末尾。
+         */
         if (c->data == r && r->postponed == NULL) {
             c->data = sr;
         }
@@ -2369,12 +2447,16 @@ ngx_http_subrequest(ngx_http_request_t *r,
     sr->main_filter_need_in_memory = r->main_filter_need_in_memory;
 
     sr->uri_changes = NGX_HTTP_MAX_URI_CHANGES + 1;
+    // NOTE: 这里和函数最开始的 if 判断对应
     sr->subrequests = r->subrequests - 1;
 
     tp = ngx_timeofday();
     sr->start_sec = tp->sec;
     sr->start_msec = tp->msec;
 
+    /*
+     * NOTE:
+     */
     r->main->count++;
 
     *psr = sr;
@@ -2808,6 +2890,13 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     *cf = pcf;
 
     if (rv == NGX_CONF_OK && !cscf->listen) {
+
+        /*
+         * NOTE: 如果该 server{...} 块中没有配置 listen 指令，那么默认监听
+         *       0.0.0.0 这个 ip 地址，至于 port，如果有权限的话，则监听 80，
+         *       否则监听 8000
+         */
+
         ngx_memzero(&lsopt, sizeof(ngx_http_listen_opt_t));
 
         p = ngx_pcalloc(cf->pool, sizeof(struct sockaddr_in));
@@ -3904,6 +3993,9 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     lsopt.rcvbuf = -1;
     lsopt.sndbuf = -1;
 #if (NGX_HAVE_SETFIB)
+    /*
+     * NOTE: setfib 的意思是是？
+     */
     lsopt.setfib = -1;
 #endif
 #if (NGX_HAVE_TCP_FASTOPEN)
@@ -3913,6 +4005,12 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     lsopt.ipv6only = 1;
 #endif
 
+    /*
+     * NOTE: listen 指令语法：http://nginx.org/en/docs/http/ngx_http_core_module.html#listen
+     *       listen address[:port]  [opt]
+     *       listen port            [opt]
+     *       listen unix:path       [opt]
+     */
     for (n = 2; n < cf->args->nelts; n++) {
 
         if (ngx_strcmp(value[n].data, "default_server") == 0
@@ -3922,6 +4020,17 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /*
+         * NOTE: bind 这个选项是用来告诉 nginx 要给这个 address:port 单独调用 bind
+         *       调用。
+         *       那么什么叫做"单独"呢？比如如果有多个 listen 指令监听了相同的端口，但是
+         *       不同的 address，而且其中有一个是监听了所有的 address（*:port），那么
+         *       nginx 只会在 *:port 上调用 bind。在这种情况下，accept connection 时
+         *       需要调用 getsockname 这个系统调用来确定 address
+         *       而且需要注意的是，setfib, backlog, rcvbuf, sndbuf, accept_filter,
+         *       deferred, ipv6only, or so_keepalive 这些参数被设置了的话，也是会对
+         *       这个 address:port 单独进行 bind。
+         */
         if (ngx_strcmp(value[n].data, "bind") == 0) {
             lsopt.set = 1;
             lsopt.bind = 1;
@@ -3929,6 +4038,10 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
 
 #if (NGX_HAVE_SETFIB)
+        /*
+         * NOTE: setfib 用来设置相关的路由表，即 SO_SETFIB 选项，这个选项目前只在
+         *       FreeBSD 上使用
+         */
         if (ngx_strncmp(value[n].data, "setfib=", 7) == 0) {
             lsopt.setfib = ngx_atoi(value[n].data + 7, value[n].len - 7);
             lsopt.set = 1;
@@ -4008,6 +4121,12 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /*
+         * NOTE: accept_filter 是用来设置 accept 过滤器的名字（SO_ACCEPT_FILTER 选项）
+         *       用于在在到来的连接被传递给 accept 之前将其过滤， 目前只用于 FreeBSD
+         *       和 Net BSD 5.0+
+         *       其值一般为 dataready 或者 httpready
+         */
         if (ngx_strncmp(value[n].data, "accept_filter=", 14) == 0) {
 #if (NGX_HAVE_DEFERRED_ACCEPT && defined SO_ACCEPTFILTER)
             lsopt.accept_filter = (char *) &value[n].data[14];
@@ -4035,6 +4154,10 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /*
+         * NOTE: 当我们用 listen 指令监听一个通配符 IPv6 地址（[::]），这个选项用来
+         *       决定这个监听 socket 是指接受 ipv6 连接还是 ipv6 和 ipv4 都接受
+         */
         if (ngx_strncmp(value[n].data, "ipv6only=o", 10) == 0) {
 #if (NGX_HAVE_INET6 && defined IPV6_V6ONLY)
             if (ngx_strcmp(&value[n].data[10], "n") == 0) {
@@ -4062,6 +4185,9 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #endif
         }
 
+        /*
+         * NOTE: reuseport 选项是用来
+         */
         if (ngx_strcmp(value[n].data, "reuseport") == 0) {
 #if (NGX_HAVE_REUSEPORT)
             lsopt.reuseport = 1;
@@ -4099,6 +4225,10 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #endif
         }
 
+        /*
+         * NOTE: spyd 选项用来支持 SPDY 协议，需要开启 ngx_http_spdy_module 支持
+         *       一般和 ssl 一起用，但是 nginx 中也可以单独使用
+         */
         if (ngx_strcmp(value[n].data, "spdy") == 0) {
             ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
                                "invalid parameter \"spdy\": "
@@ -4223,6 +4353,10 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/*
+ * REFERENCE: [1] http://nginx.org/en/docs/http/server_names.html
+ *            [2] http://nginx.org/en/docs/http/request_processing.html
+ */
 static char *
 ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -4235,10 +4369,24 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    /*
+     * NOTE: server_name 指令后面可以接多个名字，可以分为确切名、通配符名、正则名。
+     *       确切名：www.example.com
+     *       通配符名：*.example.com、www.example.* 星号只能出现在开始或者结束，还有一
+     *                种特殊的 .example.com，既可以匹配确切名 example.com，也可以匹配
+     *                通配符名 *.example.com
+     *       正则名：~^(?<user>.+)\.example\.net$，以 ~ 开头，其中的 ^ 和 $ 不是必需
+     *              的，但是通常会加上；其中的 ?<user> 是一种命名捕获。
+     */
     for (i = 1; i < cf->args->nelts; i++) {
 
         ch = value[i].data[0];
 
+        /*
+         * NOTE: 检验一下 server_name 的有消息
+         *       1. *.example.com
+         *       2. .example.com
+         */
         if ((ch == '*' && (value[i].len < 3 || value[i].data[1] != '.'))
             || (ch == '.' && value[i].len < 2))
         {
@@ -4247,6 +4395,10 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             return NGX_CONF_ERROR;
         }
 
+        /*
+         * NOTE: hello/world 这种语法最好不要在 server_name指令中出现，这种目录结构应
+         *       该是放在 location 中的（后面这句是我的理解）
+         */
         if (ngx_strchr(value[i].data, '/')) {
             ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
                                "server name \"%V\" has suspicious symbols",

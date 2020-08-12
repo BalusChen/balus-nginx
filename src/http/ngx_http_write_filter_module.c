@@ -80,6 +80,9 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
                        cl->buf->file_pos,
                        cl->buf->file_last - cl->buf->file_pos);
 
+        /*
+         * NOTE: ngx_buf_special
+         */
         if (ngx_buf_size(cl->buf) == 0 && !ngx_buf_special(cl->buf)) {
             ngx_log_error(NGX_LOG_ALERT, c->log, 0,
                           "zero size buf in writer "

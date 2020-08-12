@@ -4,45 +4,27 @@
  * Copyright (C) Nginx, Inc.
  */
 
+/*
+ * NOTE: 理解 range 模块的使用场景和实现思路。
+ *       HTTP 中的 Content-Range 是一个响应头，它在一般的网页处理中没有什么用，但是对于
+ *       大文件的下载、CDN 回源、断点续传等是非常有用的。它允许一次只下载文件的一部分，后
+ *       面再分批次下载其他部分，或者并发下载，从而提高下载速度。
+ *       那么 nginx 是怎么实现 range 的呢？
+ *       1. client 发送 request 至 nginx,
+ *       2. nginx 从本地，或者从缓存拿到数据之后
+ *       3. header filter 解析 client 发送来的 Range、If-Range 头部，将所有的
+ *          <start, end> 放到 request 的 range_body_filter 的 ctx 中去，后面
+ *          body filter 可以根据这些来组装数据
+ *       4. body filter
+ *
+ * QUESTION: 1. 为什么要分为两个模块呢？
+ *           2. 数据发送至 filter 时是所有的数据么？还是说是一部分数据，filter 也会多次
+ *              调用？
+ */
 
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-
-
-/*
- * the single part format:
- *
- * "HTTP/1.0 206 Partial Content" CRLF
- * ... header ...
- * "Content-Type: image/jpeg" CRLF
- * "Content-Length: SIZE" CRLF
- * "Content-Range: bytes START-END/SIZE" CRLF
- * CRLF
- * ... data ...
- *
- *
- * the multipart format:
- *
- * "HTTP/1.0 206 Partial Content" CRLF
- * ... header ...
- * "Content-Type: multipart/byteranges; boundary=0123456789" CRLF
- * CRLF
- * CRLF
- * "--0123456789" CRLF
- * "Content-Type: image/jpeg" CRLF
- * "Content-Range: bytes START0-END0/SIZE" CRLF
- * CRLF
- * ... data ...
- * CRLF
- * "--0123456789" CRLF
- * "Content-Type: image/jpeg" CRLF
- * "Content-Range: bytes START1-END1/SIZE" CRLF
- * CRLF
- * ... data ...
- * CRLF
- * "--0123456789--" CRLF
- */
 
 
 typedef struct {
@@ -152,6 +134,17 @@ ngx_http_range_header_filter(ngx_http_request_t *r)
     ngx_http_core_loc_conf_t     *clcf;
     ngx_http_range_filter_ctx_t  *ctx;
 
+    /*
+     * NOTE: range 开始不处理 subrequest，但是有了 slice filter（在 range filter
+     *       之前处理）之后，由于 slice filter 会用 subrequest （此时 main request 的
+     *       subrequest_range = 1），所以如果
+     *       (Q：为什么 slice filter 使用的 subrequest 就必须经过 range 处理？）
+     *       所以现在只是不处理不带有 subrequest_ranges = 1 的 subrequest，因为
+     *       subrequest_range = 1 的 subrequest 是 slice filter 产生的特有的
+     *
+     * QUESTION: 只允许处理 status = HTTP_OK 的响应，所以在 slice filter 里面才会把
+     *           upstream 返回的 PARTIAL_CONTENT 返回码也给改成 HTTP_OK
+     */
     if (r->http_version < NGX_HTTP_VERSION_10
         || r->headers_out.status != NGX_HTTP_OK
         || (r != r->main && !r->subrequest_ranges)
@@ -176,10 +169,16 @@ ngx_http_range_header_filter(ngx_http_request_t *r)
         goto next_filter;
     }
 
+    // NOTE: Etag MDN: https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Headers/If-Range
     if (r->headers_in.if_range) {
 
         if_range = &r->headers_in.if_range->value;
 
+        /*
+         * NOTE: 如果 If-Range 用的是 Etag，而 Etag 是由被双引号包围的 ACSII 编码
+         *       的字符串组成
+         *       这里注意 nginx 是如何判断 If-Range 用的是 Etag 还是 http-date
+         */
         if (if_range->len >= 2 && if_range->data[if_range->len - 1] == '"') {
 
             if (r->headers_out.etag == NULL) {
@@ -200,6 +199,11 @@ ngx_http_range_header_filter(ngx_http_request_t *r)
             goto parse;
         }
 
+        /*
+         * NOTE: 如果 If-Range 用的是 http-date，而获取的 entity 的 last_modified_time
+         *       未知，那么跳过 range 处理，而不是忽略 If-Range，因为如果忽略 If-Range
+         *       的话，client 会认为 entity 从指定的时间到现在并没有发生改变
+         */
         if (r->headers_out.last_modified_time == (time_t) -1) {
             goto next_filter;
         }
@@ -226,6 +230,9 @@ parse:
 
     ranges = r->single_range ? 1 : clcf->max_ranges;
 
+    /*
+     * NOTE: 解析 client request 中的 Range 头部
+     */
     switch (ngx_http_range_parse(r, ctx, ranges)) {
 
     case NGX_OK:
@@ -252,11 +259,15 @@ parse:
 
 next_filter:
 
+    /*
+     * NOTE: 给客户端传递 Accept-Ranges: bytes 头部，告诉 client，nginx 支持 range
+     */
     r->headers_out.accept_ranges = ngx_list_push(&r->headers_out.headers);
     if (r->headers_out.accept_ranges == NULL) {
         return NGX_ERROR;
     }
 
+    // QUESTION: hash 值的作用？
     r->headers_out.accept_ranges->hash = 1;
     ngx_str_set(&r->headers_out.accept_ranges->key, "Accept-Ranges");
     ngx_str_set(&r->headers_out.accept_ranges->value, "bytes");
@@ -276,6 +287,15 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
     ngx_http_range_t             *range;
     ngx_http_range_filter_ctx_t  *mctx;
 
+    /*
+     * NOTE: 对于 subrequest，如果 main request 设置了 range 的话，那么直接把 main
+     *       request 的 range 给拷贝过来。因为不管是 main request 还是 subrequest，
+     *       其都是从一个 client request 发展过来的，所以他们的 Range 头部信息都是相同
+     *       的，而在 main request 中，已经把 client request 中的 Range header 给解
+     *       析出来并存放在自己的 ctx->ranges 数组中了。
+     *
+     * QUESTION: 有什么情况是 main request 没有处理 range，但是 subrequest 却要处理呢？
+     */
     if (r != r->main) {
         mctx = ngx_http_get_module_ctx(r->main,
                                        ngx_http_range_body_filter_module);
@@ -283,6 +303,7 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
             ctx->ranges = mctx->ranges;
             return NGX_OK;
         }
+        // QUESTION: 会有 mctx == NULL 的情况么？不用处理？
     }
 
     if (ngx_array_init(&ctx->ranges, r->pool, 1, sizeof(ngx_http_range_t))
@@ -291,7 +312,7 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
         return NGX_ERROR;
     }
 
-    p = r->headers_in.range->value.data + 6;
+    p = r->headers_in.range->value.data + 6;    /* "bytes=" */
     size = 0;
     content_length = r->headers_out.content_length_n;
 
@@ -305,6 +326,17 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
 
         while (*p == ' ') { p++; }
 
+        /*
+         * NOTE: Range header 的语法一般是：Range: start-end[, start-end...]
+         *       Range: bytes=0-199
+         *       Range: bytes=-499
+         *       Range: bytes=1000-
+         */
+
+        /*
+         * NOTE: 处理 Range: bytes=100-199 这种情况，但是只处理 '100-'这几个字符，
+         *       后续的'199'和 Range: bytes=-500 这种情况中的'500'一起处理
+         */
         if (*p != '-') {
             if (*p < '0' || *p > '9') {
                 return NGX_HTTP_RANGE_NOT_SATISFIABLE;
@@ -326,15 +358,25 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
 
             while (*p == ' ') { p++; }
 
+            /*
+             * NOTE: 处理 Range: bytes=500- 这种没有 end 的情况
+             *
+             * QUESTION：为什么 end = content_length，而不是 content_length + start ？
+             *           难道 content-length 表示的是整个文件的长度，而不是本块数据的
+             *           长度？
+             */
             if (*p == ',' || *p == '\0') {
                 end = content_length;
                 goto found;
             }
 
         } else {
+            // NOTE: 标记 Range: bytes=-500 这种没有 start 的情况
             suffix = 1;
             p++;
         }
+
+        // NOTE: 处理 bytes=-500 和 bytes=100-199 这两种情况的 end 部分
 
         if (*p < '0' || *p > '9') {
             return NGX_HTTP_RANGE_NOT_SATISFIABLE;
@@ -354,11 +396,29 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
             return NGX_HTTP_RANGE_NOT_SATISFIABLE;
         }
 
+        /*
+         * NOTE: suffix 说明是 Range: bytes=-500 这种情况，此时 start 不是解析出来
+         *       的，而需要我们自己通过计算来确定。需要注意的是 bytes=-500 表示的是最
+         *       后 500 个字节，而不是 0-500 字节。
+         *       所以如果解析出来的 end >= content_length，也就是说比整个文件还要大，
+         *       那就发送整个文件
+         */
+
         if (suffix) {
             start = (end < content_length) ? content_length - end : 0;
             end = content_length - 1;
         }
 
+        /*
+         * NOTE: client 的 request 中 Range: bytes=start-end 用的是闭区间，而 nginx
+         *       在 ctx->range 中用左闭右开[range->start, range->end)来表示。所以
+         *       如果解析出来的 end 比整个文件都大，那么就将其设置为 content_length
+         *       而不是 content_length；而正常从 Range HEADER 中解析出来的 end，则
+         *       需要将其 +1（即使是 suffix 的情况，end 在上面也被设置成了 content_length - 1，
+         *       所以下面在 found 计算总的 size 的时候不是 size += (end - start + 1)。
+         *
+         * QUESTION: 那么这样的好处是什么？便于计算？
+         */
         if (end >= content_length) {
             end = content_length;
 
@@ -388,6 +448,9 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
             }
 
         } else if (start == 0) {
+            /*
+             * QUESTION: 如果 Range: bytes=0-500 这样的呢？
+             */
             return NGX_DECLINED;
         }
 
@@ -408,6 +471,23 @@ ngx_http_range_parse(ngx_http_request_t *r, ngx_http_range_filter_ctx_t *ctx,
 }
 
 
+/*
+ * the single part format:
+ *
+ * "HTTP/1.0 206 Partial Content" CRLF
+ * ... header ...
+ * "Content-Type: image/jpeg" CRLF
+ * "Content-Length: SIZE" CRLF
+ * "Content-Range: bytes START-END/SIZE" CRLF
+ * CRLF
+ * ... data ...
+ */
+
+/*
+ * NOTE: 如果 client 发来的 request 里面 Range 头只有一个范围，那么调用
+ *       range_singlepart_header 来给向 client 发送的 response 里面新
+ *       增一个 Content-Range 头，比较简单。
+ */
 static ngx_int_t
 ngx_http_range_singlepart_header(ngx_http_request_t *r,
     ngx_http_range_filter_ctx_t *ctx)
@@ -415,10 +495,18 @@ ngx_http_range_singlepart_header(ngx_http_request_t *r,
     ngx_table_elt_t   *content_range;
     ngx_http_range_t  *range;
 
+    /*
+     * NOTE: 因为 slice 的缘故，现在只处理 main request，为什么？
+     */
     if (r != r->main) {
         return ngx_http_next_header_filter(r);
     }
 
+    /*
+     * NOTE: Content-Range 响应头的语法：
+     *       Content-Range: START-END/SIZE
+     *       其中需要注意的是 SIZE 是整个文件的大小
+     */
     content_range = ngx_list_push(&r->headers_out.headers);
     if (content_range == NULL) {
         return NGX_ERROR;
@@ -426,6 +514,7 @@ ngx_http_range_singlepart_header(ngx_http_request_t *r,
 
     r->headers_out.content_range = content_range;
 
+    // QUESTION: hash 设置为 0 和 1 有什么不同？
     content_range->hash = 1;
     ngx_str_set(&content_range->key, "Content-Range");
 
@@ -447,6 +536,9 @@ ngx_http_range_singlepart_header(ngx_http_request_t *r,
                                            r->headers_out.content_length_n)
                                - content_range->value.data;
 
+    /*
+     * QUESTION: 下面两句的作用是什么？
+     */
     r->headers_out.content_length_n = range->end - range->start;
     r->headers_out.content_offset = range->start;
 
@@ -458,6 +550,29 @@ ngx_http_range_singlepart_header(ngx_http_request_t *r,
     return ngx_http_next_header_filter(r);
 }
 
+
+/*
+ * the multipart format:
+ *
+ * "HTTP/1.0 206 Partial Content" CRLF
+ * ... header ...
+ * "Content-Type: multipart/byteranges; boundary=0123456789" CRLF
+ * CRLF
+ * CRLF
+ * "--0123456789" CRLF
+ * "Content-Type: image/jpeg" CRLF
+ * "Content-Range: bytes START0-END0/SIZE" CRLF
+ * CRLF
+ * ... data ...
+ * CRLF
+ * "--0123456789" CRLF
+ * "Content-Type: image/jpeg" CRLF
+ * "Content-Range: bytes START1-END1/SIZE" CRLF
+ * CRLF
+ * ... data ...
+ * CRLF
+ * "--0123456789--" CRLF
+ */
 
 static ngx_int_t
 ngx_http_range_multipart_header(ngx_http_request_t *r,
@@ -474,6 +589,12 @@ ngx_http_range_multipart_header(ngx_http_request_t *r,
            + r->headers_out.content_type.len
            + sizeof(CRLF "Content-Range: bytes ") - 1;
 
+    /*
+     * NOTE: content_type_len 和 content_type.len 存储的是
+     *       Content-Type: image/jpeg; charset=utf-8
+     *       这里 content_type_len 存储的是 ';' 分号之前的长度，不包括 charset
+     *       而 content_type.len 则是整个 header 的长度
+     */
     if (r->headers_out.content_type_len == r->headers_out.content_type.len
         && r->headers_out.charset.len)
     {
@@ -524,6 +645,10 @@ ngx_http_range_multipart_header(ngx_http_request_t *r,
                                    - ctx->boundary_header.data;
     }
 
+    /*
+     * QUESTION: 上面的 if-else 写入 boundary_header 的是原来的 Content-Type，
+     *           会不会和这里写入的 multipart/byteranges 不一致？这样没有问题么？
+     */
     r->headers_out.content_type.data =
         ngx_pnalloc(r->pool,
                     sizeof("Content-Type: multipart/byteranges; boundary=") - 1
@@ -537,6 +662,7 @@ ngx_http_range_multipart_header(ngx_http_request_t *r,
 
     /* "Content-Type: multipart/byteranges; boundary=0123456789" */
 
+    // QUESTION: 为什么这里不写入 "Content-Type: " ？
     r->headers_out.content_type.len =
                            ngx_sprintf(r->headers_out.content_type.data,
                                        "multipart/byteranges; boundary=%0muA",
@@ -643,6 +769,7 @@ ngx_http_range_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
      * multipart ranges are supported only if whole body is in a single buffer
      */
 
+    // QUESTION: 为什么使用 ngx_buf_special ？
     if (ngx_buf_special(in->buf)) {
         return ngx_http_next_body_filter(r, in);
     }
@@ -664,12 +791,18 @@ ngx_http_range_test_overlapped(ngx_http_request_t *r,
     ngx_uint_t         i;
     ngx_http_range_t  *range;
 
+    /*
+     * QUESTION: 这里没有懂，为什么 ctx->offset != 0 就表示重叠了？
+     */
     if (ctx->offset) {
         goto overlapped;
     }
 
     buf = in->buf;
 
+    /*
+     * NOTE: 如果 in 的第一个 buf 是所有 in chain 里面的最后一个 buf，那么说明
+     */
     if (!buf->last_buf) {
         start = ctx->offset;
         last = ctx->offset + ngx_buf_size(buf);

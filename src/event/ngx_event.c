@@ -196,6 +196,10 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_uint_t  flags;
     ngx_msec_t  timer, delta;
 
+    /*
+     * NOTE: 如果配置了 timer_resolution 配置项（其值在 ngx_core_conf_t 中）的话，那么
+     *       每隔
+     */
     if (ngx_timer_resolution) {
         timer = NGX_TIMER_INFINITE;
         flags = 0;
@@ -1301,6 +1305,7 @@ ngx_event_core_init_conf(ngx_cycle_t *cycle, void *conf)
         (void) close(fd);
         module = &ngx_epoll_module;
 
+    // NOTE: ENOSYS 错误码表示
     } else if (ngx_errno != NGX_ENOSYS) {
         module = &ngx_epoll_module;
     }

@@ -23,6 +23,12 @@ ngx_spinlock(ngx_atomic_t *lock, ngx_atomic_int_t value, ngx_uint_t spin)
             return;
         }
 
+        /*
+         * QUESTION: 为什么只在 cpu 的个数大于 1 的时候自旋？
+         *
+         * NOTE: 如果只有 1 个 cpu，那么由于 worker 的个数和 cpu 的个数是一致的，
+         *       所以自旋的话，就没法处理网络请求了
+         */
         if (ngx_ncpu > 1) {
 
             for (n = 1; n < spin; n <<= 1) {

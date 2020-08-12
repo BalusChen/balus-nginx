@@ -123,7 +123,6 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t                   mi, m, s;
     ngx_conf_t                   pcf;
     ngx_http_module_t           *module;
-    // QUESTION: event 模块的 ctx 是一个三级指针，为什么这里就一个普通一级指针就 ok 了？
     ngx_http_conf_ctx_t         *ctx;
     ngx_http_core_loc_conf_t    *clcf;
     ngx_http_core_srv_conf_t   **cscfp;
@@ -279,10 +278,16 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         clcf = cscfp[s]->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
+        /*
+         * NOTE: 首先给 locations 链表排序
+         */
         if (ngx_http_init_locations(cf, cscfp[s], clcf) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
 
+        /*
+         * NOTE: 为 location 构建静态检索树
+         */
         if (ngx_http_init_static_location_trees(cf, clcf) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
@@ -325,6 +330,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     *cf = pcf;
 
 
+    // NOTE: 将二维结构转化为一维结构
     if (ngx_http_init_phase_handlers(cf, cmcf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -466,6 +472,12 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
     use_rewrite = cmcf->phases[NGX_HTTP_REWRITE_PHASE].handlers.nelts ? 1 : 0;
     use_access = cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers.nelts ? 1 : 0;
 
+    /*
+     * NOTE: 有 3 个比较特殊的 phase：
+     *       - find config：必须存在
+     *       - post rewrite：可选存在，最多 1 个 handler
+     *       - post access：可选存在，最多 1 个 handler
+     */
     n = 1                  /* find config phase */
         + use_rewrite      /* post rewrite phase */
         + use_access;      /* post access phase */
@@ -499,10 +511,26 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
         case NGX_HTTP_FIND_CONFIG_PHASE:
             find_config_index = n;
 
+            /*
+             * QUESTION: 这里不用设置 ph->next 么？
+             */
             ph->checker = ngx_http_core_find_config_phase;
             n++;
             ph++;
 
+            /*
+             * NOTE: 这里 continue 即不会执行下面的其他 case，也不会执行 switch 后面的
+             *       for 循环，感觉有点难理解
+             *
+             * NOTE: 用这个的原因是，find config 阶段是由 nginx 框架控制的，只能有一个
+             *       handler，所以即使有模块往里面注册了，也不把他加入到实际使用的
+             *       handler 一维数组中去
+             *
+             * NOTE: 不能自定义添加的 phase 有：
+             *       - find config
+             *       - post rewrite
+             *       - post access
+             */
             continue;
 
         case NGX_HTTP_REWRITE_PHASE:
@@ -514,6 +542,10 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
             break;
 
         case NGX_HTTP_POST_REWRITE_PHASE:
+            /*
+             * NOTE: rewrite 之后，我们需要重新找到 rewrite 的 location 的配置
+             *       所以需要设置 next 为 find_config_index
+             */
             if (use_rewrite) {
                 ph->checker = ngx_http_core_post_rewrite_phase;
                 ph->next = find_config_index;
@@ -524,11 +556,17 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
             continue;
 
         case NGX_HTTP_ACCESS_PHASE:
+            /*
+             * QUESTION: 为什么这里 n++ 之后再 break，不会造成重复计数么？
+             */
             checker = ngx_http_core_access_phase;
             n++;
             break;
 
         case NGX_HTTP_POST_ACCESS_PHASE:
+            /*
+             * QUESTION: 为什么这里并没有 n++ 之后再 continue？
+             */
             if (use_access) {
                 ph->checker = ngx_http_core_post_access_phase;
                 ph->next = n;
@@ -547,6 +585,9 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
 
         n += cmcf->phases[i].handlers.nelts;
 
+        /*
+         * NOTE: 数组元素是反向添加的
+         */
         for (j = cmcf->phases[i].handlers.nelts - 1; j >= 0; j--) {
             ph->checker = checker;
             ph->handler = h[j];
@@ -1399,6 +1440,10 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
         /* a port is already in the port list */
 
+        /*
+         * NOTE: 如果 port 已经在这个 port list 中了，那么只需要把当前地址加入到该
+         *       port 对应的地址中去
+         */
         return ngx_http_add_addresses(cf, cscf, &port[i], lsopt);
     }
 
@@ -1409,6 +1454,10 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
         return NGX_ERROR;
     }
 
+    /*
+     * NOTE: family 指的是该套接字的种类，比如 IPv4, IPv6, Unix domain
+     *       如果是 Unix domain 的话，port = 0
+     */
     port->family = sa->sa_family;
     port->port = p;
     port->addrs.elts = NULL;
@@ -1449,6 +1498,10 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
         /* the address is already in the address list */
 
+        /*
+         * NOTE: 如果这个地址已经在这个 port 的地址列表中了，那么需要把当前的 core_srv_conf
+         *       加入到该地址的 core_srv_conf 列表中去
+         */
         if (ngx_http_add_server(cf, cscf, &addr[i]) != NGX_OK) {
             return NGX_ERROR;
         }
@@ -1456,6 +1509,9 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
         /* preserve default_server bit during listen options overwriting */
         default_server = addr[i].opt.default_server;
 
+        /*
+         * NOTE: proxy_protocol 的含义是什么？
+         */
         proxy_protocol = lsopt->proxy_protocol || addr[i].opt.proxy_protocol;
 
 #if (NGX_HTTP_SSL)
@@ -1465,6 +1521,9 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
         http2 = lsopt->http2 || addr[i].opt.http2;
 #endif
 
+        /*
+         * NOTE: set 被置位的话，说明
+         */
         if (lsopt->set) {
 
             if (addr[i].opt.set) {
@@ -1474,6 +1533,10 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
                 return NGX_ERROR;
             }
 
+            /*
+             * NOTE: 这里可以看出，如果多个相同地址，有的指定了选项，有的没有指定，那么
+             *       最终以指定了的选项为准
+             */
             addr[i].opt = *lsopt;
         }
 
@@ -1522,6 +1585,9 @@ ngx_http_add_address(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     ngx_http_conf_addr_t  *addr;
 
     if (port->addrs.elts == NULL) {
+        /*
+         * QUESTION: 为什么是从 temp_pool 中分配内存？
+         */
         if (ngx_array_init(&port->addrs, cf->temp_pool, 4,
                            sizeof(ngx_http_conf_addr_t))
             != NGX_OK)
@@ -1619,6 +1685,10 @@ ngx_http_optimize_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     port = ports->elts;
     for (p = 0; p < ports->nelts; p++) {
 
+        /*
+         * NOTE: ngx_http_cmp_conf_addrs 的排序规则：
+         *       bind()ed > non-bind()ed > wildcard
+         */
         ngx_sort(port[p].addrs.elts, (size_t) port[p].addrs.nelts,
                  sizeof(ngx_http_conf_addr_t), ngx_http_cmp_conf_addrs);
 
@@ -1636,6 +1706,9 @@ ngx_http_optimize_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
 #endif
                )
             {
+                /*
+                 * NOTE:
+                 */
                 if (ngx_http_server_names(cf, cmcf, &addr[a]) != NGX_OK) {
                     return NGX_ERROR;
                 }
@@ -1684,6 +1757,10 @@ ngx_http_server_names(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
 
     for (s = 0; s < addr->servers.nelts; s++) {
 
+        /*
+         * NOTE: 每个 server{...} 块中 server_name 指令是可以多次使用的，
+         *       所以 cscf 中才有一个 server_names 数组
+         */
         name = cscfp[s]->server_names.elts;
 
         for (n = 0; n < cscfp[s]->server_names.nelts; n++) {
@@ -1807,6 +1884,9 @@ failed:
 }
 
 
+/*
+ * NOTE: cmp(a, b) < 0，那么 a 在 b 的前面
+ */
 static ngx_int_t
 ngx_http_cmp_conf_addrs(const void *one, const void *two)
 {
@@ -1815,6 +1895,18 @@ ngx_http_cmp_conf_addrs(const void *one, const void *two)
     first = (ngx_http_conf_addr_t *) one;
     second = (ngx_http_conf_addr_t *) two;
 
+    /*
+     * QUESTION: 为什么 ngx_cmp_locations 的比较方式要同时考虑 one 和 two？ 比如
+     *           if (first->noname && !second->noname)  { return 1;  }
+     *           if (!first->noname && second->noname)  { return -1; }
+     *           if (!first->noname && !second->noname) { return 0;  }
+     *           1. 上面这种写法是考虑两者的相对顺序，noname 的在后面，都不是 noname，
+     *           那么就不改变相对顺序。
+     *           2. 但是下面这种写法，则是考虑两者的绝对位置，只要是 wildcard，就一定
+     *           要在最后面，至于相对顺序，则不太关心（这一点还有待确定）。
+     *           3. 而且在下面的 bind 选项的比较中，也采用了和 noname 一样的比较方式。
+     *
+     */
     if (first->opt.wildcard) {
         /* a wildcard address must be the last resort, shift it to the end */
         return 1;

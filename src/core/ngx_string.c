@@ -678,6 +678,10 @@ ngx_strnstr(u_char *s1, char *s2, size_t len)
  * must be length of the second substring - 1.
  */
 
+/*
+ * NOTE: 从 s1 中找 s2 子串，这里没有使用 KMP，但是比较好理解
+ */
+
 u_char *
 ngx_strstrn(u_char *s1, char *s2, size_t n)
 {
@@ -2003,6 +2007,10 @@ ngx_sort(void *base, size_t n, size_t size,
              p2 > (u_char *) base && cmp(p2 - size, p) > 0;
              p2 -= size)
         {
+            /*
+             * NOTE: 如果 cmp(a, b) < 0，那么 a 在 b 的前面
+             */
+
             ngx_memcpy(p2, p2 - size, size);
         }
 

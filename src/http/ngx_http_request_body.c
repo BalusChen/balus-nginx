@@ -40,6 +40,14 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
 
     r->main->count++;
 
+    /*
+     * NOTE: 检查是否有必要读取 request body
+     *       1. r != r->main: 不是主请求，subrequest不是被网络事件驱动的，需要由nginx
+     *          主动做出动作，即 write，而无需 read
+     *       2. r->request_body != NULL: 说明已经读取过 request body 了，不用再读
+     *       3. r->discard_body == 1: 说明已经执行过 ngx_http_discard_request_body
+     *          方法。
+     */
     if (r != r->main || r->request_body || r->discard_body) {
         r->request_body_no_buffering = 0;
         post_handler(r);
@@ -72,6 +80,11 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
 
     r->request_body = rb;
 
+    /*
+     * NOTE: 如果 client 发送的 content_length < 0，说明
+     *
+     * QUESTION: content_length == 0 呢？
+     */
     if (r->headers_in.content_length_n < 0 && !r->headers_in.chunked) {
         r->request_body_no_buffering = 0;
         post_handler(r);
@@ -85,6 +98,10 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
     }
 #endif
 
+    /*
+     * NOTE: 可能在读取 request header 的时候，就把一部分 request body 给读取进来了
+     *      （毕竟 HTTP 是基于 TCP，而 TCP 传输的是字节流），那么把这部分的数据
+     */
     preread = r->header_in->last - r->header_in->pos;
 
     if (preread) {
@@ -103,6 +120,9 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
             goto done;
         }
 
+        /*
+         * QUESTION: 这里是干啥？
+         */
         r->request_length += preread - (r->header_in->last - r->header_in->pos);
 
         if (!r->headers_in.chunked

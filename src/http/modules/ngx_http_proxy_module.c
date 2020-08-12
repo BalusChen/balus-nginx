@@ -895,6 +895,7 @@ ngx_http_proxy_handler(ngx_http_request_t *r)
     u->create_key = ngx_http_proxy_create_key;
 #endif
 
+    // TODO: 理解下面几个回调
     u->create_request = ngx_http_proxy_create_request;
     u->reinit_request = ngx_http_proxy_reinit_request;
     u->process_header = ngx_http_proxy_process_status_line;
@@ -1281,6 +1282,9 @@ ngx_http_proxy_create_request(ngx_http_request_t *r)
     }
 
 
+    /*
+     * NOTE: 把 client 发送给 nginx 的 request 中的 header 也发送给 upstream
+     */
     if (plcf->upstream.pass_request_headers) {
         part = &r->headers_in.headers.part;
         header = part->elts;
@@ -3589,6 +3593,9 @@ ngx_http_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 
+    /*
+     * NOTE:
+     */
     clcf->handler = ngx_http_proxy_handler;
 
     if (clcf->name.len && clcf->name.data[clcf->name.len - 1] == '/') {
