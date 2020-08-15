@@ -5,6 +5,7 @@
 objs/
 build/
 
+3rd/
 CMakeLists.txt
 cmake-build-debug/
 CMakeFiles/
